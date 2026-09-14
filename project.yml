@@ -20,7 +20,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.abhaymettu.turntable
         INFOPLIST_FILE: Turntable/Info.plist
         GENERATE_INFOPLIST_FILE: NO
-        CURRENT_PROJECT_VERSION: 6
+        CURRENT_PROJECT_VERSION: 7
         MARKETING_VERSION: 0.1.0
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MACCATALYST: NO
