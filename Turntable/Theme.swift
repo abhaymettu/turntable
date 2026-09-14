@@ -22,11 +22,20 @@ enum Theme {
     static let cardRadius: CGFloat = 22
     static let artRadius: CGFloat = 18
 
-    /// Critically damped by default, matching the settle of system transitions. Bounce only
-    /// where a real state change gives the motion a reason to overshoot.
-    static let spring = Animation.spring(duration: 0.38, bounce: 0.0)
-    static let springy = Animation.spring(duration: 0.42, bounce: 0.22)
-    static let quick = Animation.spring(duration: 0.24, bounce: 0.0)
+    /// What a card pads its content by, and therefore what its inner corners owe the outer.
+    /// Concentric means the gap between the two curves is the padding between them all the
+    /// way round the arc, so an inner radius is the outer minus the inset, never a second
+    /// round number picked by eye.
+    static let cardInset: CGFloat = 14
+    static let innerRadius: CGFloat = cardRadius - cardInset
+
+    /// The system's own springs rather than hand-picked numbers. `.smooth` is critically
+    /// damped, which is Apple's move/reposition setting (damping 1.0, response ~0.4);
+    /// `.snappy` carries the small overshoot they reserve for motion a gesture threw.
+    /// Bounce is spent only where a real state change earns the overshoot.
+    static let spring = Animation.smooth(duration: 0.35)
+    static let springy = Animation.snappy(duration: 0.4)
+    static let quick = Animation.smooth(duration: 0.2)
 
     /// UIKit's dark bar backgrounds are a grey blur. On a true-black app they read as
     /// lighter strips pasted over the ground, so both bars take the ground itself and keep
@@ -137,7 +146,9 @@ struct PrimaryButton: View {
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
         .tint(Theme.accent)
-        .foregroundStyle(.black)
+        // Black reads on ember and on nothing else. A disabled prominent button drops its
+        // fill to a dark tint, so the label goes back to the system's colour or it vanishes.
+        .foregroundStyle(enabled && !loading ? AnyShapeStyle(.black) : AnyShapeStyle(.secondary))
         .disabled(!enabled || loading)
         .animation(Theme.quick, value: enabled)
     }
@@ -227,6 +238,27 @@ struct FailureNote: View {
         .padding(14)
         .card(14, material: .thinMaterial)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// The taps the app answers with.
+///
+/// Haptics are the part of "native" a screenshot cannot show, and the part that goes
+/// missing first. They are spent on the four moments that are actually physical: a
+/// transport control taking effect, a character landing in the pairing code, and a pairing
+/// finishing one way or the other. Nothing decorative gets one.
+@MainActor
+enum Haptics {
+    static func tap(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
+        UIImpactFeedbackGenerator(style: style).impactOccurred()
+    }
+
+    static func selection() {
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    static func notify(_ kind: UINotificationFeedbackGenerator.FeedbackType) {
+        UINotificationFeedbackGenerator().notificationOccurred(kind)
     }
 }
 

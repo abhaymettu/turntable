@@ -32,6 +32,16 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<!-- First run never asks for an address. The app browses _turntable._tcp to find the
+	     server it is about to redeem a pairing code against, which is what iOS gates behind
+	     the local network prompt. Declining it means the app cannot find the server, so the
+	     pairing screen says to turn it back on in Settings. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Turntable looks for your server on this Wi-Fi so pairing only asks you for a code.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_turntable._tcp</string>
+	</array>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Turntable searches Apple Music and plays what you or your agent queue.</string>
 	<!-- The server you pair with is usually plain http on an address you own: a LAN IP,

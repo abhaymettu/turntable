@@ -4,9 +4,12 @@ import Security
 
 /// Where the server is and what proves this phone is allowed to talk to it.
 ///
-/// The app ships with neither. It starts unpaired, the pairing screen trades a short code
-/// for a `{server_url, token}` pair, and every later request carries the token as a bearer.
-/// The address lives in UserDefaults, the token in the Keychain, because it is a credential.
+/// The app ships with neither, and first run never asks for an address. It starts unpaired,
+/// the pairing screen redeems a six character code against whatever `ServerDiscovery` found
+/// on the local network, and the server answers with `{server_url, token}`. `server_url` is
+/// the authoritative address from that point on: the tailnet or tunnel address when the
+/// server was told one, which keeps working after the phone leaves this Wi-Fi. The address
+/// lives in UserDefaults, the token in the Keychain, because it is a credential.
 @MainActor
 @Observable
 final class Pairing {
@@ -19,15 +22,17 @@ final class Pairing {
         case expired
         case cannotReach
         case noInternet
+        case noServerFound
         case serverSaid(String)
 
         var errorDescription: String? {
             switch self {
             case .badAddress: "That address is not a web address. It looks like http://192.168.1.20:8787"
             case .badCode: "The server does not know that code. Check the six characters and try again."
-            case .expired: "That code has expired. Ask for a fresh one; codes last 15 minutes."
-            case .cannotReach: "Cannot reach that address. The server may be off, or the phone may be on a different network."
+            case .expired: "That code has expired. Ask your agent for a fresh one; codes last 15 minutes."
+            case .cannotReach: "Found the server but could not reach it. It may have stopped since it answered."
             case .noInternet: "This phone has no network connection."
+            case .noServerFound: "No Turntable server on this Wi-Fi yet. Ask your agent to start it, keep both on the same network, and check that Local Network is on for Turntable in Settings."
             case .serverSaid(let message): message
             }
         }
@@ -55,18 +60,44 @@ final class Pairing {
         token = Keychain.read(Key.keychainAccount)
     }
 
-    /// Trade the code for a token. Throws a `Failure` the screen can show verbatim.
-    func pair(address: String, code: String) async throws {
-        guard let base = Self.normalize(address) else { throw Failure.badAddress }
+    /// Redeem the code against every address discovery turned up, first answer wins.
+    ///
+    /// Several candidates is the normal case, not the exception: one server shows up once
+    /// per interface it answers on. They are tried in order and the first 200 ends it, so a
+    /// dead candidate costs one timeout rather than the pairing.
+    func pair(code: String, candidates: [URL]) async throws {
+        guard !candidates.isEmpty else { throw Failure.noServerFound }
+        let cleaned = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
 
+        var lastFailure = Failure.noServerFound
+        for base in candidates {
+            do {
+                let decoded = try await redeem(code: cleaned, at: base)
+                guard let url = URL(string: decoded.server_url), url.host() != nil else {
+                    throw Failure.serverSaid("The server's reply did not make sense.")
+                }
+                store(url: url, token: decoded.token)
+                return
+            } catch let failure as Failure {
+                // A server that knows the code but calls it expired is the real answer;
+                // nothing further down the list can improve on it.
+                if case .expired = failure { throw failure }
+                lastFailure = failure
+            }
+        }
+        throw lastFailure
+    }
+
+    /// Trade the code for a token at one address. Throws a `Failure` the screen can show.
+    private func redeem(code: String, at base: URL) async throws -> PairResponse {
         var request = URLRequest(url: base.appending(path: "/pair"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "code": code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+            "code": code,
             "device_id": Config.deviceID,
         ])
-        request.timeoutInterval = 10
+        request.timeoutInterval = 6
 
         let data: Data
         let response: URLResponse
@@ -87,14 +118,27 @@ final class Pairing {
             }
         }
 
-        guard let decoded = try? JSONDecoder().decode(PairResponse.self, from: data),
-              let url = URL(string: decoded.server_url), url.host() != nil
-        else { throw Failure.serverSaid("The server's reply did not make sense.") }
+        guard let decoded = try? JSONDecoder().decode(PairResponse.self, from: data) else {
+            throw Failure.serverSaid("The server's reply did not make sense.")
+        }
+        return decoded
+    }
 
+    /// Point this phone at a different address without pairing again. Advanced only: the
+    /// token stays valid, so this is for a server that moved, not for a new server.
+    @discardableResult
+    func setServerAddress(_ raw: String) -> Bool {
+        guard let url = Self.normalize(raw) else { return false }
         UserDefaults.standard.set(url.absoluteString, forKey: Key.serverURL)
-        Keychain.write(decoded.token, account: Key.keychainAccount)
         serverURL = url
-        token = decoded.token
+        return true
+    }
+
+    private func store(url: URL, token: String) {
+        UserDefaults.standard.set(url.absoluteString, forKey: Key.serverURL)
+        Keychain.write(token, account: Key.keychainAccount)
+        serverURL = url
+        self.token = token
     }
 
     func unpair() {
@@ -118,6 +162,7 @@ final class Pairing {
 }
 
 /// The three Keychain calls this app needs, and nothing else.
+@MainActor
 private enum Keychain {
     private static let service = "com.turntable.pairing"
 
@@ -140,12 +185,20 @@ private enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func write(_ value: String, account: String) {
+    /// A failed write is why a phone that just paired can come back unpaired, so it says
+    /// so rather than returning quietly. Unsigned simulator builds have no keychain access
+    /// group and fail here every time; a signed build does not.
+    @discardableResult
+    static func write(_ value: String, account: String) -> Bool {
         delete(account)
         var request = query(account)
         request[kSecValueData as String] = Data(value.utf8)
         request[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(request as CFDictionary, nil)
+        let status = SecItemAdd(request as CFDictionary, nil)
+        if status != errSecSuccess {
+            DebugLog.shared.add("pair", "keychain write failed, OSStatus \(status); this pairing will not survive a relaunch")
+        }
+        return status == errSecSuccess
     }
 
     static func delete(_ account: String) {

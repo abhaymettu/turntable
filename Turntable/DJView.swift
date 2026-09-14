@@ -186,12 +186,13 @@ struct DJView: View {
             secondaryTransport("backward.fill", "Previous") { await player.previous() }
 
             Button {
+                Haptics.tap(.medium)
                 Task { await player.togglePlayPause() }
             } label: {
                 ZStack {
                     Circle().fill(.white)
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 26))
+                        .font(.title.weight(.medium))
                         .foregroundStyle(.black)
                         .contentTransition(.symbolEffect(.replace))
                         .offset(x: player.isPlaying ? 0 : 2)
@@ -213,7 +214,10 @@ struct DJView: View {
     private var hasTransport: Bool { player.hasQueue || player.current != nil }
 
     private func secondaryTransport(_ symbol: String, _ name: String, _ action: @escaping () async -> Void) -> some View {
-        Button { Task { await action() } } label: {
+        Button {
+            Haptics.tap()
+            Task { await action() }
+        } label: {
             Image(systemName: symbol)
                 .font(.title3)
                 .foregroundStyle(.primary)
@@ -262,7 +266,10 @@ struct DJView: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 10) {
                     ForEach(player.entries.prefix(10), id: \.id) { entry in
-                        Button { Task { await player.jump(to: entry) } } label: {
+                        Button {
+                            Haptics.tap()
+                            Task { await player.jump(to: entry) }
+                        } label: {
                             QueueTile(entry: entry, isCurrent: entry.id == player.current?.entryID)
                         }
                         .buttonStyle(.press)
@@ -290,10 +297,8 @@ struct DJView: View {
             Button { showSearch = true } label: {
                 Text("Search Apple Music").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
             .controlSize(.regular)
-            .tint(Theme.accent)
-            .foregroundStyle(.black)
         }
     }
 
@@ -418,7 +423,8 @@ private struct QueueTile: View {
                 .overlay(alignment: .bottomTrailing) {
                     if isCurrent {
                         Image(systemName: "speaker.wave.2.fill")
-                            .font(.system(size: 8, weight: .bold))
+                            .font(.caption2.weight(.bold))
+                            .imageScale(.small)
                             .foregroundStyle(.black)
                             .padding(3)
                             .background(Circle().fill(Theme.accent))
@@ -452,7 +458,7 @@ struct MediaRow: View {
                 HStack(spacing: 5) {
                     if let kind {
                         Text(kind.uppercased())
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.caption2.weight(.bold))
                             .tracking(0.4)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 5)
@@ -594,6 +600,7 @@ struct SearchSheet: View {
         add: @escaping () async -> Void
     ) -> some View {
         Button {
+            Haptics.tap()
             Task {
                 await add()
                 withAnimation(Theme.springy) { justAdded = id }
@@ -630,7 +637,10 @@ struct QueueSheet: View {
                 if player.hasQueue {
                     List {
                         ForEach(player.entries, id: \.id) { entry in
-                            Button { Task { await player.jump(to: entry) } } label: {
+                            Button {
+                                Haptics.tap()
+                                Task { await player.jump(to: entry) }
+                            } label: {
                                 HStack(spacing: 12) {
                                     MediaRow(title: entry.title, subtitle: entry.subtitle ?? "",
                                              artwork: entry.artwork, kind: nil)

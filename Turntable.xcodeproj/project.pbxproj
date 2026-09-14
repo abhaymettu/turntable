@@ -27,6 +27,7 @@
 		CC397A2A72855E7A1A5A5FF8 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A70BA265D3F4D044C8096F3 /* RootTabView.swift */; };
 		D66638B9A3D1B1A5F5619F34 /* PodcastModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB94BB7B4D1DF0E9D4DAD407 /* PodcastModel.swift */; };
 		FA0E0936CA086BD1774C0146 /* PodcastPlayerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1C6892E5429409E8D5BB330 /* PodcastPlayerModel.swift */; };
+		FA97662590A09D23B11AA2CA /* Discovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99F82ED46D04632DBF34B448 /* Discovery.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +45,7 @@
 		86CD9D86E97B1F40660BF12D /* PlayerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerModel.swift; sourceTree = "<group>"; };
 		8AD49C0C8633DF070679ED7E /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
 		989C485E03C3FCC0BAF98712 /* TurntableApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurntableApp.swift; sourceTree = "<group>"; };
+		99F82ED46D04632DBF34B448 /* Discovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Discovery.swift; sourceTree = "<group>"; };
 		AC749CCAD114692E5582B59E /* DJView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DJView.swift; sourceTree = "<group>"; };
 		B3C0D040EE96CFEE4D826A23 /* Turntable.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Turntable.entitlements; sourceTree = "<group>"; };
 		BC62F8F85E69B5C6E33A2E32 /* VideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoView.swift; sourceTree = "<group>"; };
@@ -73,6 +75,7 @@
 				6600B142C7F81D162668E1A3 /* Assets.xcassets */,
 				8AD49C0C8633DF070679ED7E /* Config.swift */,
 				3B7EBCD8D8B4DFBE4576F123 /* DebugLog.swift */,
+				99F82ED46D04632DBF34B448 /* Discovery.swift */,
 				AC749CCAD114692E5582B59E /* DJView.swift */,
 				1FFEE6979CE68FCCEAF7685C /* Info.plist */,
 				7F05090121761846EFD5DBCC /* MusicService.swift */,
@@ -174,6 +177,7 @@
 				6322CF05A37B00594AF531AE /* Config.swift in Sources */,
 				5141954444291BA40FE9E4B6 /* DJView.swift in Sources */,
 				A728F88C68FD4B4704A39B5A /* DebugLog.swift in Sources */,
+				FA97662590A09D23B11AA2CA /* Discovery.swift in Sources */,
 				01BA691B9D5257BCA9DFD2E6 /* MusicService.swift in Sources */,
 				43AE5C366276494BFBFB099F /* Pairing.swift in Sources */,
 				5E8F45D65845416D64C4661D /* PairingView.swift in Sources */,

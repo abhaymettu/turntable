@@ -227,7 +227,10 @@ private struct PodcastMiniPlayer: View {
                 }
             }
 
-            Button { player.togglePlayPause() } label: {
+            Button {
+                Haptics.tap(.medium)
+                player.togglePlayPause()
+            } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.black)

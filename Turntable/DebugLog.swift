@@ -1,5 +1,6 @@
 import AVFoundation
 import Observation
+import OSLog
 import SwiftUI
 
 /// In-app log. Route changes and agent traffic land here so they can be read on the phone
@@ -19,7 +20,12 @@ final class DebugLog {
     private(set) var entries: [Entry] = []
     private let cap = 400
 
+    /// Mirrored to the unified log as well as the in-app list, so the same line is readable
+    /// from `xcrun simctl spawn <sim> log stream` when there is no screen to tap.
+    private static let log = Logger(subsystem: "com.abhaymettu.turntable", category: "app")
+
     func add(_ tag: String, _ message: String) {
+        Self.log.notice("[\(tag, privacy: .public)] \(message, privacy: .public)")
         entries.append(Entry(at: Date(), tag: tag, message: message))
         if entries.count > cap { entries.removeFirst(entries.count - cap) }
     }
@@ -116,6 +122,19 @@ struct AdvancedView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var pairing = Pairing.shared
     @State private var confirmUnpair = false
+    @State private var address = ""
+    @FocusState private var addressFocused: Bool
+
+    private var addressEdited: Bool {
+        !address.isEmpty && address != pairing.serverURL?.absoluteString
+    }
+
+    private func saveAddress() {
+        addressFocused = false
+        guard pairing.setServerAddress(address) else { return }
+        address = pairing.serverURL?.absoluteString ?? address
+        Haptics.notify(.success)
+    }
 
     var body: some View {
         NavigationStack {
@@ -137,13 +156,33 @@ struct AdvancedView: View {
                     LabeledContent("Interval", value: "15 s")
                 }
 
-                Section("Server") {
+                // The only address field in the app. First run has none on purpose: the
+                // server names its own address when it answers a pairing code. This is for
+                // the server that moved afterwards, so the token stays and the address does
+                // not have to be re-earned with a fresh code.
+                Section {
                     LabeledContent("Address") {
-                        Text(pairing.serverURL?.absoluteString ?? "unpaired")
+                        TextField("unpaired", text: $address)
                             .font(.footnote.monospaced())
                             .multilineTextAlignment(.trailing)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .submitLabel(.done)
+                            .focused($addressFocused)
+                            .onSubmit { saveAddress() }
                     }
                     LabeledContent("Token", value: pairing.token == nil ? "none" : "held in Keychain")
+                    if addressEdited {
+                        Button("Use This Address") { saveAddress() }
+                            .disabled(Pairing.normalize(address) == nil)
+                    }
+                } header: {
+                    Text("Server")
+                } footer: {
+                    Text(addressEdited
+                         ? "Changing this points the phone at another address with the same token. A different server needs a new pairing code."
+                         : "Set when this phone paired, from the address the server gave in its reply.")
                 }
 
                 Section("This Phone") {
@@ -184,6 +223,8 @@ struct AdvancedView: View {
             .screenGround()
             .navigationTitle("Advanced")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear { address = pairing.serverURL?.absoluteString ?? "" }
+            .animation(Theme.quick, value: addressEdited)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
             }

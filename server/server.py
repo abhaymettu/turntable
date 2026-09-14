@@ -18,11 +18,13 @@ token is generated on first start and written to server/auth.json; read it from 
     curl -H "Authorization: Bearer $TOKEN" http://localhost:8787/devices
 """
 
+import atexit
 import hashlib
 import json
 import os
 import secrets
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -146,6 +148,32 @@ def redeem_code(raw, device_id):
         auth["devices"][_hash(token)] = {"device_id": device_id, "paired_at": now}
         _write_auth(auth)
     return token, None
+
+
+def advertise(port):
+    """Announce this server on the local network as _turntable._tcp.
+
+    A phone that has just been installed knows a six character code and nothing else,
+    so it has to find the server before it can redeem the code. Bonjour is how it does
+    that, and it is the only reason this exists: the address the phone keeps afterwards
+    is the one POST /pair hands back, not the one it discovered.
+
+    Both responders here ship with the OS (mDNSResponder on macOS, avahi on Linux), so
+    this stays stdlib-only. If neither is present the server runs exactly as before and
+    a phone pairs through the address field in the app's Advanced screen.
+    """
+    name = "Turntable on %s" % socket.gethostname().split(".")[0]
+    for argv in (
+        ["dns-sd", "-R", name, "_turntable._tcp", "local", str(port)],
+        ["avahi-publish-service", name, "_turntable._tcp", str(port)],
+    ):
+        try:
+            child = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            continue
+        atexit.register(child.terminate)
+        return argv[0]
+    return None
 
 
 def lan_address(port):
@@ -418,11 +446,15 @@ def main():
         return
     replay_log()
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    responder = advertise(port)
     key_state = "present" if os.path.exists(APNS_KEY_PATH) else "missing, placeholder path only"
     print("turntable server listening on 0.0.0.0:%d, log at %s" % (port, LOG_PATH), file=sys.stderr)
     print("auth at %s (agent token is in there)" % AUTH_PATH, file=sys.stderr)
     print("pair a phone with: python3 server.py --pair", file=sys.stderr)
     print("APNs key path: %s (%s)" % (APNS_KEY_PATH, key_state), file=sys.stderr)
+    print("local network: %s" % ("announced as _turntable._tcp via %s" % responder if responder
+                                 else "not announced, no dns-sd or avahi-publish-service here"),
+          file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

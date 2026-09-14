@@ -1,5 +1,7 @@
 # Turntable, for agents
 
+Repo: https://github.com/abhaymettu/turntable
+
 Turntable is an iOS app that plays Apple Music, plus a small stdlib-only Python server. You
 (an agent with a shell) POST a "pick" to the server. The phone checks in every 15 seconds,
 reads the current pick, and acts on it. You steer the human's music by writing to the
@@ -10,6 +12,24 @@ One server holds one human's pick and one human's devices. There is no account s
 no multi-tenancy. If you are steering more than one person, that is more than one server
 process.
 
+## If someone just handed you the setup prompt
+
+They installed the app, tapped Copy, and pasted it to you. The whole job is: get the server
+running, get it reachable, mint a pairing code, and reply with only the six characters. In
+order:
+
+1. Clone or open this repo.
+2. Read the rest of this file.
+3. Decide the address the phone should keep. If Tailscale is running on this machine, that
+   is its `100.x` address; if it is not installed, install and start it and say, in one
+   line, that they need to turn Tailscale on on their phone too. Without Tailscale the LAN
+   address still works, but only while they are on that Wi-Fi.
+4. Start the server with that address in `TURNTABLE_PUBLIC_URL` (see below). Leave it up.
+5. Stay on the same Wi-Fi as the phone for the pairing step: the app finds the server over
+   Bonjour and never asks anyone to type an address.
+6. `python3 server.py --pair`, then reply with **only** the six character code. No address,
+   no commentary. It lasts 15 minutes and works once.
+
 ## Start the server
 
 ```
@@ -18,6 +38,13 @@ cd server && ./run.sh
 
 That runs `python3 server.py`. Python 3, stdlib only, nothing to `pip install`. It listens
 on `0.0.0.0:8787` by default.
+
+While it runs it also announces itself on the local network as `_turntable._tcp`, through
+whichever of `dns-sd` (macOS) or `avahi-publish-service` (Linux) is present. That
+announcement is how a freshly installed phone finds the server to redeem a pairing code
+against; it is not how the phone remembers the server afterwards. If neither responder
+exists the server runs exactly as before, and pairing then needs the address typed into the
+app's Advanced screen.
 
 Environment variables:
 
@@ -51,8 +78,7 @@ Do not print or log `auth.json`'s contents anywhere the human did not ask for.
 
 ## Pair a phone
 
-You cannot pair a phone yourself; you can only make a code and tell the human what to do
-with it. Run:
+You cannot pair a phone yourself; you can only make a code and hand it over. Run:
 
 ```
 python3 server.py --pair
@@ -68,9 +94,9 @@ server address: http://192.168.1.192:8787
 good for 15 minutes, one phone. Run this again for another code.
 ```
 
-Your job at this step: run `--pair`, then tell the human the address and the code in plain
-words, for example "open the app, go to pairing, type in http://192.168.1.192:8787 and
-DPGTX9". The human types both into the app's pairing screen. The app then does:
+**Reply with only the code.** The printed address is for you, not for them: the app's first
+run has no address field. It browses `_turntable._tcp`, finds this server, and POSTs the
+code to it:
 
 ```
 curl -s -X POST http://192.168.1.192:8787/pair \
@@ -78,13 +104,19 @@ curl -s -X POST http://192.168.1.192:8787/pair \
   -d '{"code":"DPGTX9","device_id":"some-device-id"}'
 ```
 
-and gets back `{"server_url": "...", "token": "..."}`. The app stores that token and uses
-it for every later request.
+It gets back `{"server_url": "...", "token": "..."}`. **`server_url` is the address the
+phone keeps**, and it is `TURNTABLE_PUBLIC_URL` when you set one, or the host the phone
+reached you on when you did not. Set `TURNTABLE_PUBLIC_URL` to the tailnet or tunnel
+address before pairing and the phone keeps working after it leaves that Wi-Fi; leave it
+unset and the phone keeps a LAN address that stops resolving the moment they go out.
 
 A code works once. Redeeming an already-used or unknown code returns
 `{"error": "bad code", "reason": "bad code"}` at HTTP 403. A code past its 15 minute window
 returns `{"error": "expired", "reason": "expired"}`. Ten wrong guesses burn every code
 currently pending, so do not brute force this.
+
+If Bonjour cannot cross the network between you and the phone, the app's Advanced screen
+takes an address directly; that is the fallback, not the path.
 
 ## Endpoint reference
 
@@ -245,10 +277,10 @@ for one. Do not invent or guess a catalog_id.
 
 ## First five minutes in this repo
 
-1. Start the server: `cd server && ./run.sh`
+1. Start the server: `cd server && ./run.sh` (add `TURNTABLE_PUBLIC_URL` first if the phone should keep a tailnet or tunnel address)
 2. Read your token: `TOKEN=$(python3 -c 'import json;print(json.load(open("auth.json"))["agent_token"])')` (run from inside `server/`, or point at wherever `TURNTABLE_AUTH` put it)
 3. Mint a pairing code: `python3 server.py --pair`
-4. Tell the human the printed address and code, in plain words, and ask them to enter both in the app's pairing screen
+4. Reply with only the six character code. The app finds the server itself
 5. Confirm the device shows up: `curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8787/devices`
 6. Set a first pick, for example:
    ```
