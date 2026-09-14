@@ -1,0 +1,12 @@
+.DS_Store
+xcuserdata/
+*.xcuserstate
+build/
+DerivedData/
+server/turntable.jsonl
+server/auth.json
+server/apns_key.p8
+server/__pycache__/
+tools/__pycache__/
+notes/
+TURNTABLE-PUBLIC.md

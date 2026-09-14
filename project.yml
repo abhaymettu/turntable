@@ -1,0 +1,30 @@
+name: Turntable
+options:
+  bundleIdPrefix: com.abhaymettu
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "26.0"
+  generateEmptyDirectories: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+targets:
+  Turntable:
+    type: application
+    platform: iOS
+    sources:
+      - path: Turntable
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.abhaymettu.turntable
+        INFOPLIST_FILE: Turntable/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CURRENT_PROJECT_VERSION: 4
+        MARKETING_VERSION: 0.1.0
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: NO
+        CODE_SIGN_ENTITLEMENTS: Turntable/Turntable.entitlements
+        # Simulator only in M1. Signing is left alone on purpose; build with CODE_SIGNING_ALLOWED=NO.
+    scheme:
+      testTargets: []
