@@ -1,5 +1,7 @@
 import SwiftUI
 
+/// The standard iOS tab bar. It is translucent over the black ground rather than an opaque
+/// strip, so the OLED background runs to the bottom edge and the chrome floats on it.
 struct RootTabView: View {
     enum Tab: String { case dj, video, podcasts }
 
@@ -10,32 +12,16 @@ struct RootTabView: View {
     var body: some View {
         TabView(selection: $tab) {
             DJView()
-                .tabItem { Label("DJ", systemImage: "music.note") }
+                .tabItem { Label("Playing", systemImage: "play.circle.fill") }
                 .tag(Tab.dj)
             VideoView()
-                .tabItem { Label("Video", systemImage: "play.rectangle") }
+                .tabItem { Label("Video", systemImage: "play.rectangle.fill") }
                 .tag(Tab.video)
             PodcastsView()
-                .tabItem { Label("Podcasts", systemImage: "dot.radiowaves.left.and.right") }
+                .tabItem { Label("Shows", systemImage: "waveform") }
                 .tag(Tab.podcasts)
         }
-    }
-}
-
-/// Honest placeholder for a tab that is not built yet. Says what will be there and when.
-struct StubView: View {
-    let title: String
-    let symbol: String
-    let detail: String
-
-    var body: some View {
-        NavigationStack {
-            ContentUnavailableView {
-                Label(title, systemImage: symbol)
-            } description: {
-                Text(detail)
-            }
-            .navigationTitle(title)
-        }
+        .tint(Theme.accent)
+        .preferredColorScheme(.dark)
     }
 }

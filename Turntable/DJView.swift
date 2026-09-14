@@ -1,176 +1,341 @@
 import MusicKit
 import SwiftUI
 
-/// The DJ tab. One list: search on top, queue below, the Now Playing bar pinned at the
-/// bottom. The bar is the only living element on the screen; everything else stays quiet.
+/// The main screen: album art first, one transport, and a deck at the bottom that always
+/// holds something. System navigation bar and tab bar around it, Apple Music's own shape
+/// inside it. Nothing here is a form and nothing here is a log.
 struct DJView: View {
     @Environment(MusicService.self) private var music
     @Environment(PlayerModel.self) private var player
     @Environment(AgentLink.self) private var agent
     @Environment(RouteLogger.self) private var routes
     @State private var search = SearchModel()
-    @State private var showLog = false
+    @State private var showSearch = false
+    @State private var showAdvanced = false
+    @State private var showQueue = false
     @State private var showOffer = false
 
     var body: some View {
         NavigationStack {
-            Group {
-                switch music.gate {
-                case .checking:
-                    ProgressView("Checking Apple Music")
-                case .needsPermission:
-                    GateView(
-                        symbol: "music.note.house",
-                        title: "Connect Apple Music",
-                        detail: "Turntable needs permission to search the catalog and play on this phone.",
-                        action: "Allow access"
-                    ) { await music.requestAgain() }
-                case .denied:
-                    GateView(
-                        symbol: "hand.raised",
-                        title: "Apple Music access is off",
-                        detail: "Turn on Media and Apple Music for Turntable in Settings, then come back.",
-                        action: "Open Settings"
-                    ) { openSettings() }
-                case .noSubscription:
-                    GateView(
-                        symbol: "person.crop.circle.badge.exclamationmark",
-                        title: "No Apple Music subscription",
-                        detail: music.canOfferSubscription
-                            ? "Playback needs an active subscription on this account."
-                            : "Playback needs an active subscription. In the simulator, sign into a Media account in Settings first.",
-                        action: music.canOfferSubscription ? "See subscription options" : "Check again"
-                    ) {
-                        if music.canOfferSubscription { showOffer = true } else { await music.refresh() }
-                    }
-                    .musicSubscriptionOffer(isPresented: $showOffer)
-                case .ready:
-                    readyBody
-                }
+            VStack(spacing: 0) {
+                chips
+                    .padding(.top, 6)
+                    .padding(.bottom, 12)
+
+                hero
+                    .padding(.horizontal, 22)
+
+                trackTitle
+                    .padding(.horizontal, 26)
+                    .padding(.top, 18)
+
+                position
+                    .padding(.horizontal, 26)
+                    .padding(.top, 14)
+
+                transport
+                    .padding(.top, 14)
+
+                deck
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                    .padding(.bottom, 4)
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                VStack(alignment: .leading, spacing: 4) {
-                    AgentStatusLabel(link: agent.link, lastContact: agent.lastContact, offlineReason: agent.offlineReason)
-                    AudioOutputLabel(name: routes.outputLabel)
-                    if agent.needsPairing {
-                        Button("Pair again") { Pairing.shared.unpair() }
-                            .font(.caption.weight(.medium))
-                            .buttonStyle(.plain)
-                            .foregroundStyle(Theme.accent)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.top, 2)
-                .padding(.bottom, 10)
-            }
-            .navigationTitle("DJ")
+            .screenGround()
+            .navigationTitle("Now Playing")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showSearch = true } label: { Label("Search", systemImage: "magnifyingglass") }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showLog = true } label: { Label("Debug log", systemImage: "text.alignleft") }
+                    Button { showAdvanced = true } label: { Label("Advanced", systemImage: "gearshape") }
                 }
             }
-            .sheet(isPresented: $showLog) { DebugLogView() }
         }
         .task { await music.bootstrap() }
+        .task {
+            // TURNTABLE_SHEET=advanced|search opens a sheet on launch, the same headless
+            // screenshot hook as TURNTABLE_TAB. Harmless in normal use.
+            switch ProcessInfo.processInfo.environment["TURNTABLE_SHEET"] {
+            case "advanced": showAdvanced = true
+            case "search": showSearch = true
+            default: break
+            }
+        }
+        .sheet(isPresented: $showSearch) { SearchSheet(search: search).environment(player) }
+        .sheet(isPresented: $showAdvanced) { AdvancedView() }
+        .sheet(isPresented: $showQueue) { QueueSheet().environment(player) }
+        .musicSubscriptionOffer(isPresented: $showOffer)
     }
 
-    private var readyBody: some View {
-        List {
-            Section {
-                TextField("Search songs and albums", text: $search.query)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .submitLabel(.search)
-                    .accessibilityLabel("Search Apple Music")
-                searchRows
-            } header: {
-                Text("Apple Music")
+    // MARK: Status
+
+    private var chips: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                Chip(symbol: agentSymbol, text: agentWord, emphasis: agent.link == .online)
+                Chip(symbol: outputSymbol, text: routes.outputLabel)
+                Chip(symbol: "list.bullet",
+                     text: player.hasQueue ? "\(player.entries.count) in queue" : "Queue empty")
+            }
+            .padding(.horizontal, 20)
+        }
+        .scrollIndicators(.hidden)
+        .frame(height: 30)
+        .animation(Theme.spring, value: agent.link)
+    }
+
+    private var agentWord: String {
+        switch agent.link {
+        case .idle: "Agent paused"
+        case .online: "Agent online"
+        case .offline: "Agent offline"
+        }
+    }
+
+    /// Three different glyph shapes, not three colours: the state reads with the colour off.
+    private var agentSymbol: String {
+        switch agent.link {
+        case .idle: "pause.circle"
+        case .online: "antenna.radiowaves.left.and.right"
+        case .offline: "antenna.radiowaves.left.and.right.slash"
+        }
+    }
+
+    private var outputSymbol: String {
+        let name = routes.outputLabel
+        if name.localizedCaseInsensitiveContains("airpods") { return "airpods" }
+        switch name {
+        case "Speaker": return "speaker.wave.2"
+        case "Headphones", "USB audio": return "headphones"
+        case "AirPlay": return "airplayaudio"
+        case "No audio output": return "speaker.slash"
+        default: return "hifispeaker"
+        }
+    }
+
+    // MARK: Hero
+
+    private var hero: some View {
+        // ArtworkImage wants explicit point dimensions, so the square is measured here and
+        // handed down rather than left to a resizable modifier it does not have.
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height)
+            ZStack {
+                RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
+                    .fill(Color(white: 0.05))
+                if let artwork = player.current?.artwork {
+                    ArtworkImage(artwork, width: side, height: side)
+                } else {
+                    VinylMark(size: side * 0.54, spinning: player.isPlaying)
+                }
+            }
+            .frame(width: side, height: side)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
+                    .strokeBorder(Theme.separator, lineWidth: 0.5)
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .shadow(color: .black.opacity(0.8), radius: 28, y: 12)
+        // The cover sits back a step while paused and steps forward on play: one quiet echo
+        // of a state the transport glyph already states in shape.
+        .scaleEffect(player.isPlaying ? 1 : 0.955)
+        .animation(Theme.springy, value: player.isPlaying)
+        .accessibilityHidden(true)
+    }
+
+    private var trackTitle: some View {
+        VStack(spacing: 4) {
+            Text(player.current?.title ?? "Nothing playing")
+                .font(.title3.weight(.semibold))
+                .lineLimit(1)
+            Text(player.current?.artist ?? "Your agent picks, or search to start one")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+        .contentTransition(.opacity)
+        .animation(Theme.spring, value: player.current)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var position: some View {
+        VStack(spacing: 6) {
+            ProgressTrack(progress: player.progress)
+            HStack {
+                Text(clockString(player.position))
+                Spacer()
+                Text(player.current.map { clockString($0.duration) } ?? "0:00")
+            }
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.tertiary)
+        }
+        .opacity(player.current == nil ? 0.5 : 1)
+        .animation(Theme.spring, value: player.current == nil)
+    }
+
+    // MARK: Transport
+
+    private var transport: some View {
+        HStack(spacing: 28) {
+            secondaryTransport("backward.fill", "Previous") { await player.previous() }
+
+            Button {
+                Task { await player.togglePlayPause() }
+            } label: {
+                ZStack {
+                    Circle().fill(.white)
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 26))
+                        .foregroundStyle(.black)
+                        .contentTransition(.symbolEffect(.replace))
+                        .offset(x: player.isPlaying ? 0 : 2)
+                }
+                .frame(width: 66, height: 66)
+                .shadow(color: .white.opacity(0.14), radius: 16)
+            }
+            .buttonStyle(PressStyle(scale: 0.93))
+            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+
+            secondaryTransport("forward.fill", "Next") { await player.next() }
+        }
+        .opacity(hasTransport ? 1 : 0.5)
+        .disabled(!hasTransport)
+        .animation(Theme.spring, value: hasTransport)
+    }
+
+    /// Something is loaded: either a queue to move through, or a track already playing.
+    private var hasTransport: Bool { player.hasQueue || player.current != nil }
+
+    private func secondaryTransport(_ symbol: String, _ name: String, _ action: @escaping () async -> Void) -> some View {
+        Button { Task { await action() } } label: {
+            Image(systemName: symbol)
+                .font(.title3)
+                .foregroundStyle(.primary)
+                .frame(width: 50, height: 50)
+                .background(.thinMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(Theme.separator, lineWidth: 0.5))
+        }
+        .buttonStyle(.press)
+        .accessibilityLabel(name)
+    }
+
+    // MARK: The deck
+
+    /// Always occupied, in every state, so the bottom of the screen never reads as a hole.
+    @ViewBuilder
+    private var deck: some View {
+        Group {
+            if let step = setupStep {
+                SetupRow(step: step)
+            } else if player.hasQueue {
+                upNext
+            } else {
+                startRow
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .frame(height: 116)
+        .card()
+    }
+
+    private var upNext: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Up Next").font(.subheadline.weight(.semibold))
+                Spacer()
+                Button { showQueue = true } label: {
+                    Label("All \(player.entries.count)", systemImage: "chevron.right")
+                        .labelStyle(TrailingIconStyle())
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.press)
+                .tint(Theme.accent)
             }
 
-            Section {
-                queueRows
-            } header: {
-                HStack {
-                    Text("Queue")
-                    Spacer()
-                    if player.hasQueue {
-                        Text("\(player.entries.count)").monospacedDigit()
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(player.entries.prefix(10), id: \.id) { entry in
+                        Button { Task { await player.jump(to: entry) } } label: {
+                            QueueTile(entry: entry, isCurrent: entry.id == player.current?.entryID)
+                        }
+                        .buttonStyle(.press)
                     }
                 }
             }
-        }
-        .listStyle(.insetGrouped)
-        .task(id: search.query) { await search.search() }
-        .safeAreaInset(edge: .bottom) {
-            NowPlayingBar()
+            .scrollIndicators(.hidden)
+            .frame(height: 76)
         }
     }
 
-    @ViewBuilder
-    private var searchRows: some View {
-        switch search.phase {
-        case .idle:
-            Text("Type at least two letters.")
-                .foregroundStyle(.secondary)
-                .font(.footnote)
-        case .loading:
-            ForEach(0..<3, id: \.self) { _ in
-                MediaRow(title: "Placeholder title", subtitle: "Placeholder artist", artwork: nil, kind: "Song")
-                    .redacted(reason: .placeholder)
-            }
-        case .failed(let message):
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Search failed", systemImage: "exclamationmark.triangle")
-                    .font(.subheadline.weight(.semibold))
-                Text(message).font(.footnote).foregroundStyle(.secondary)
-                Button("Try again") { Task { await search.retry() } }
-                    .buttonStyle(.bordered)
-            }
-            .padding(.vertical, 4)
-        case .results:
-            if search.isEmptyResult {
-                Text("Nothing for \u{201C}\(search.query)\u{201D}.")
-                    .foregroundStyle(.secondary)
-                    .font(.footnote)
-            }
-            ForEach(search.songs, id: \.id) { song in
-                Button { Task { await player.enqueue(song) } } label: {
-                    MediaRow(title: song.title, subtitle: song.artistName, artwork: song.artwork, kind: "Song")
+    private var startRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                DeckIcon(symbol: "sparkle.magnifyingglass")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Start something").font(.subheadline.weight(.semibold))
+                    Text("Search the catalog, or wait for your agent\u{2019}s pick.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
-                .accessibilityHint("Adds to the queue")
+                Spacer(minLength: 0)
             }
-            ForEach(search.albums, id: \.id) { album in
-                Button { Task { await player.enqueue(album) } } label: {
-                    MediaRow(title: album.title, subtitle: album.artistName, artwork: album.artwork, kind: "Album")
-                }
-                .accessibilityHint("Adds every track to the queue")
+            Button { showSearch = true } label: {
+                Text("Search Apple Music").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity)
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+            .tint(Theme.accent)
+            .foregroundStyle(.black)
         }
     }
 
-    @ViewBuilder
-    private var queueRows: some View {
-        if player.hasQueue {
-            ForEach(player.entries, id: \.id) { entry in
-                Button { Task { await player.jump(to: entry) } } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: entry.id == player.current?.entryID ? "speaker.wave.2.fill" : "circle")
-                            .font(.caption)
-                            .frame(width: 16)
-                            .foregroundStyle(entry.id == player.current?.entryID ? Theme.accent : Color.secondary.opacity(0.35))
-                            .accessibilityHidden(true)
-                        MediaRow(title: entry.title, subtitle: entry.subtitle ?? "", artwork: entry.artwork, kind: nil)
-                    }
-                }
-                .accessibilityLabel(entry.id == player.current?.entryID ? "Now playing, \(entry.title)" : entry.title)
+    // MARK: Apple Music setup
+
+    struct SetupStep {
+        let symbol: String
+        let title: String
+        let detail: String
+        let action: String
+        let perform: () async -> Void
+    }
+
+    /// The gate, phrased as the next step rather than as a failure. `.ready` returns nil and
+    /// the deck goes back to the queue.
+    private var setupStep: SetupStep? {
+        switch music.gate {
+        case .ready:
+            return nil
+        case .checking:
+            return SetupStep(symbol: "clock.arrow.circlepath", title: "Checking Apple Music",
+                             detail: "One moment while this phone reads its account.",
+                             action: "") { }
+        case .needsPermission:
+            return SetupStep(symbol: "music.note.house", title: "Connect Apple Music",
+                             detail: "Turntable plays through your own library and catalog.",
+                             action: "Allow Access") { await music.requestAgain() }
+        case .denied:
+            return SetupStep(symbol: "switch.2", title: "Turn on music access",
+                             detail: "Settings has Media & Apple Music for Turntable.",
+                             action: "Open Settings") { openSettings() }
+        case .noSubscription:
+            return SetupStep(
+                symbol: "person.crop.circle.badge.plus",
+                title: "Sign In to Apple Music",
+                detail: music.canOfferSubscription
+                    ? "Playback needs an active subscription on this account."
+                    : "Playback needs a Media account signed in on this device.",
+                action: music.canOfferSubscription ? "See Options" : "Check Again"
+            ) {
+                if music.canOfferSubscription { showOffer = true } else { await music.refresh() }
             }
-            .onMove { player.move(from: $0, to: $1) }
-            .onDelete { player.remove(at: $0) }
-        } else {
-            Text("Queue is empty. Search above and tap a song, or let the agent pick.")
-                .foregroundStyle(.secondary)
-                .font(.footnote)
         }
     }
 
@@ -180,106 +345,98 @@ struct DJView: View {
     }
 }
 
-/// One of the four gate states. Same layout every time so the eye lands in the same place.
-private struct GateView: View {
-    let symbol: String
-    let title: String
-    let detail: String
-    let action: String
-    let perform: () async -> Void
+// MARK: - Deck pieces
+
+/// Text on top, action underneath. Side by side, the button eats the width the sentence
+/// needs and the detail truncates mid-word, which is the one thing this card must not do.
+private struct SetupRow: View {
+    let step: DJView.SetupStep
 
     var body: some View {
-        ContentUnavailableView {
-            Label(title, systemImage: symbol)
-        } description: {
-            Text(detail)
-        } actions: {
-            Button(action) { Task { await perform() } }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                DeckIcon(symbol: step.symbol)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(step.title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    Text(step.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                if step.action.isEmpty {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            if !step.action.isEmpty {
+                Button { Task { await step.perform() } } label: {
+                    Text(step.action).font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity)
+                }
                 .buttonStyle(.borderedProminent)
-        }
-    }
-}
-
-/// Dot plus word. The word carries the meaning; the dot only echoes it.
-private struct AgentStatusLabel: View {
-    let link: AgentLink.Link
-    let lastContact: Date?
-    let offlineReason: String?
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Circle()
-                .fill(fill)
-                .frame(width: 7, height: 7)
-                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
-                .accessibilityHidden(true)
-            Text(word)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if link == .offline, let detail {
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
+                .controlSize(.regular)
+                .tint(Theme.accent)
+                .foregroundStyle(.black)
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(link == .offline ? "Agent \(word), \(detail ?? "")" : "Agent \(word)")
-    }
-
-    private var detail: String? {
-        if let offlineReason { return offlineReason }
-        guard let lastContact else { return nil }
-        return "last heard at \(lastContact.formatted(date: .omitted, time: .shortened))"
-    }
-
-    private var word: String {
-        switch link {
-        case .idle: "Agent paused"
-        case .online: "Agent online"
-        case .offline: "Agent offline"
-        }
-    }
-
-    private var fill: Color {
-        switch link {
-        case .idle: Color.secondary.opacity(0.4)
-        case .online: Theme.accent
-        case .offline: Color.secondary
-        }
     }
 }
 
-/// The current AVAudioSession output, read-only. Same treatment as AgentStatusLabel:
-/// an icon plus the name, never color alone.
-private struct AudioOutputLabel: View {
-    let name: String
+private struct DeckIcon: View {
+    let symbol: String
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: symbol)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Text(name)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Audio output \(name)")
+        Image(systemName: symbol)
+            .font(.body)
+            .foregroundStyle(Theme.accent)
+            .frame(width: 36, height: 36)
+            .background(Theme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .accessibilityHidden(true)
     }
+}
 
-    private var symbol: String {
-        if name.localizedCaseInsensitiveContains("airpods") { return "airpods" }
-        switch name {
-        case "Speaker": return "speaker.wave.2"
-        case "Headphones", "USB audio": return "headphones"
-        case "AirPlay": return "airplayaudio"
-        case "No audio output": return "speaker.slash"
-        default: return "dot.radiowaves.left.and.right"
+/// Label with the symbol after the text, the way a system disclosure row reads.
+private struct TrailingIconStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 3) {
+            configuration.title
+            configuration.icon.imageScale(.small)
         }
     }
 }
+
+private struct QueueTile: View {
+    let entry: MusicKit.MusicPlayer.Queue.Entry
+    let isCurrent: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ArtworkTile(artwork: entry.artwork, size: 52)
+                .overlay(alignment: .bottomTrailing) {
+                    if isCurrent {
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.black)
+                            .padding(3)
+                            .background(Circle().fill(Theme.accent))
+                            .padding(3)
+                    }
+                }
+            Text(entry.title)
+                .font(.caption2)
+                .fontWeight(isCurrent ? .semibold : .regular)
+                .foregroundStyle(isCurrent ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .lineLimit(1)
+                .frame(width: 52, alignment: .leading)
+        }
+        .accessibilityLabel(isCurrent ? "Now playing, \(entry.title)" : entry.title)
+    }
+}
+
+// MARK: - Shared rows
 
 struct MediaRow: View {
     let title: String
@@ -289,34 +446,34 @@ struct MediaRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            ArtworkTile(artwork: artwork, size: Theme.rowArtworkSize)
+            ArtworkTile(artwork: artwork, size: 52)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).lineLimit(1)
-                HStack(spacing: 4) {
+                Text(title).font(.subheadline).lineLimit(1)
+                HStack(spacing: 5) {
                     if let kind {
-                        Text(kind)
-                            .font(.caption2.weight(.semibold))
+                        Text(kind.uppercased())
+                            .font(.system(size: 9, weight: .bold))
+                            .tracking(0.4)
+                            .foregroundStyle(.secondary)
                             .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
+                            .padding(.vertical, 2)
                             .background(.quaternary, in: Capsule())
                     }
-                    Text(subtitle).lineLimit(1)
+                    Text(subtitle).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                 }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
         }
-        .frame(minHeight: 44)
+        .frame(minHeight: 52)
         .contentShape(Rectangle())
     }
 }
 
-/// Artwork with reserved space and a hairline so light covers hold against the surface.
+/// Artwork with reserved space and a hairline, so light covers still hold an edge against
+/// the black ground.
 struct ArtworkTile: View {
     let artwork: Artwork?
     let size: CGFloat
-    var circular = false
 
     var body: some View {
         Group {
@@ -324,102 +481,193 @@ struct ArtworkTile: View {
                 ArtworkImage(artwork, width: size, height: size)
             } else {
                 Rectangle().fill(.quaternary)
-                    .overlay { Image(systemName: "music.note").foregroundStyle(.secondary) }
+                    .overlay {
+                        Image(systemName: "music.note")
+                            .font(.system(size: size * 0.32))
+                            .foregroundStyle(.tertiary)
+                    }
             }
         }
         .frame(width: size, height: size)
-        .clipShape(shape)
-        .overlay(shape.stroke(Color.primary.opacity(0.08), lineWidth: 1))
-    }
-
-    private var shape: AnyShape {
-        circular ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: Theme.artworkRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.2, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: size * 0.2, style: .continuous)
+                .strokeBorder(Theme.separator, lineWidth: 0.5)
+        )
     }
 }
 
-/// The one living element: a record that turns while music plays, a thin progress line
-/// under it. Reduced motion stops the turn; the play icon and the line still say the state.
-struct NowPlayingBar: View {
+// MARK: - Search
+
+/// Search lives in a sheet so the main screen keeps no text field, and it uses the system
+/// search field rather than a hand-built one.
+struct SearchSheet: View {
     @Environment(PlayerModel.self) private var player
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var angle: Angle = .zero
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var search: SearchModel
+    @State private var justAdded: String?
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            GeometryReader { geo in
-                Rectangle()
-                    .fill(Theme.accent)
-                    .frame(width: geo.size.width * player.progress)
-                    .animation(reduceMotion ? nil : .linear(duration: 0.5), value: player.progress)
-            }
-            .frame(height: 2)
-            .background(.quaternary)
-            .accessibilityHidden(true)
-
-            HStack(spacing: 12) {
-                ArtworkTile(artwork: player.current?.artwork, size: 44, circular: true)
-                    .rotationEffect(angle)
-                    .overlay { Circle().fill(.background).frame(width: 8, height: 8) }
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(player.current?.title ?? "Nothing playing")
-                        .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
-                    Text(player.current.map { "\($0.artist)  \u{00B7}  \(clock(player.position)) / \(clock($0.duration))" } ?? "Queue a song to start")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+        NavigationStack {
+            results
+                .screenGround()
+                .navigationTitle("Search")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { dismiss() }
+                    }
                 }
-                Spacer(minLength: 0)
-
-                HStack(spacing: 0) {
-                    transport("backward.fill", "Previous") { await player.previous() }
-                    transport(player.isPlaying ? "pause.fill" : "play.fill", player.isPlaying ? "Pause" : "Play") { await player.togglePlayPause() }
-                        .font(.title3)
-                    transport("forward.fill", "Next") { await player.next() }
-                }
-                .disabled(!player.hasQueue)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-
-            if let error = player.lastError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
-            }
+                .searchable(text: $search.query, placement: .navigationBarDrawer(displayMode: .always),
+                            prompt: "Songs and Albums")
+                .searchFocusedIfAvailable($searchFocused)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
         }
-        .background(.bar)
-        .accessibilityElement(children: .contain)
-        .task(id: player.isPlaying) { await spin() }
+        .tint(Theme.accent)
+        .preferredColorScheme(.dark)
+        .task(id: search.query) { await search.search() }
+        .animation(Theme.spring, value: search.phase)
+        // The only reason to open this sheet is to type, so the keyboard comes up with it.
+        .onAppear { searchFocused = true }
     }
 
-    private func transport(_ symbol: String, _ name: String, _ action: @escaping () async -> Void) -> some View {
-        Button { Task { await action() } } label: {
-            Image(systemName: symbol)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+    @ViewBuilder
+    private var results: some View {
+        switch search.phase {
+        case .idle:
+            ContentUnavailableView {
+                Label("Find Something to Play", systemImage: "magnifyingglass")
+            } description: {
+                Text("Two letters is enough. Tap a result to put it in the queue.")
+            }
+        case .loading:
+            List {
+                ForEach(0..<6, id: \.self) { _ in
+                    MediaRow(title: "Placeholder title", subtitle: "Placeholder artist", artwork: nil, kind: "Song")
+                        .redacted(reason: .placeholder)
+                        .listRowBackground(Color.clear)
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+        case .failed(let message):
+            ContentUnavailableView {
+                Label("Search Didn\u{2019}t Finish", systemImage: "antenna.radiowaves.left.and.right.slash")
+            } description: {
+                Text(message)
+            } actions: {
+                Button("Try Again") { Task { await search.retry() } }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .foregroundStyle(.black)
+            }
+        case .results:
+            if search.isEmptyResult {
+                ContentUnavailableView.search(text: search.query)
+            } else {
+                List {
+                    ForEach(search.songs, id: \.id) { song in
+                        row(id: song.id.rawValue, title: song.title, subtitle: song.artistName,
+                            artwork: song.artwork, kind: "Song") { await player.enqueue(song) }
+                    }
+                    ForEach(search.albums, id: \.id) { album in
+                        row(id: album.id.rawValue, title: album.title, subtitle: album.artistName,
+                            artwork: album.artwork, kind: "Album") { await player.enqueue(album) }
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
+        }
+    }
+
+    /// The row confirms in place: the trailing glyph turns into a check for a beat, so the
+    /// tap has an answer without a banner flying across the screen.
+    private func row(
+        id: String,
+        title: String,
+        subtitle: String,
+        artwork: Artwork?,
+        kind: String,
+        add: @escaping () async -> Void
+    ) -> some View {
+        Button {
+            Task {
+                await add()
+                withAnimation(Theme.springy) { justAdded = id }
+                try? await Task.sleep(for: .seconds(1.4))
+                withAnimation(Theme.spring) { if justAdded == id { justAdded = nil } }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                MediaRow(title: title, subtitle: subtitle, artwork: artwork, kind: kind)
+                Image(systemName: justAdded == id ? "checkmark.circle.fill" : "plus.circle")
+                    .font(.title3)
+                    .foregroundStyle(justAdded == id ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(.tertiary))
+                    .contentTransition(.symbolEffect(.replace))
+            }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(name)
+        .listRowBackground(Color.clear)
+        .listRowSeparatorTint(Theme.separator)
+        .accessibilityHint(justAdded == id ? "Added to the queue" : "Adds to the queue")
     }
+}
 
-    /// 33 rpm would be 1.8 s per turn. Slower reads calmer at this size.
-    private func spin() async {
-        guard player.isPlaying, !reduceMotion else { return }
-        while !Task.isCancelled {
-            withAnimation(.linear(duration: 4)) { angle += .degrees(360) }
-            try? await Task.sleep(for: .seconds(4))
+// MARK: - Queue
+
+/// The full queue, where reordering and removing live. Kept off the main screen so that
+/// screen stays a now-playing card rather than a list.
+struct QueueSheet: View {
+    @Environment(PlayerModel.self) private var player
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if player.hasQueue {
+                    List {
+                        ForEach(player.entries, id: \.id) { entry in
+                            Button { Task { await player.jump(to: entry) } } label: {
+                                HStack(spacing: 12) {
+                                    MediaRow(title: entry.title, subtitle: entry.subtitle ?? "",
+                                             artwork: entry.artwork, kind: nil)
+                                    if entry.id == player.current?.entryID {
+                                        Image(systemName: "speaker.wave.2.fill")
+                                            .font(.footnote)
+                                            .foregroundStyle(Theme.accent)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparatorTint(Theme.separator)
+                        }
+                        .onMove { player.move(from: $0, to: $1) }
+                        .onDelete { player.remove(at: $0) }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                } else {
+                    ContentUnavailableView {
+                        Label("Queue Is Empty", systemImage: "list.bullet")
+                    } description: {
+                        Text("Search from the main screen, or let the agent pick.")
+                    }
+                }
+            }
+            .screenGround()
+            .navigationTitle("Queue")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { if player.hasQueue { EditButton() } }
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
         }
-    }
-
-    private func clock(_ seconds: TimeInterval) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let total = Int(seconds)
-        return String(format: "%d:%02d", total / 60, total % 60)
+        .tint(Theme.accent)
+        .preferredColorScheme(.dark)
+        .presentationDragIndicator(.visible)
     }
 }

@@ -1,67 +1,71 @@
 import SwiftUI
 
+/// Shows, as a wall of cover art under a standard large title. Adding a feed is a sheet,
+/// not a row on this screen, so the shelf stays a shelf.
 struct PodcastsView: View {
     @State private var store = PodcastStore()
     @State private var player = PodcastPlayerModel()
+    @State private var showAdd = false
+
+    private let columns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Add a feed") {
-                    HStack {
-                        TextField("RSS feed URL", text: $store.pastedFeedURL)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                            .submitLabel(.go)
-                            .accessibilityLabel("RSS feed URL")
-                            .onSubmit { Task { await store.addPastedFeed() } }
-                        Button("Add") { Task { await store.addPastedFeed() } }
+            Group {
+                if store.feeds.isEmpty {
+                    ContentUnavailableView {
+                        Label("No Shows Yet", systemImage: "waveform")
+                    } description: {
+                        Text("Paste an RSS link from any podcast host and its episodes land here.")
+                    } actions: {
+                        Button("Add a Show") { showAdd = true }
                             .buttonStyle(.borderedProminent)
-                            .disabled(store.pastedFeedURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .controlSize(.large)
+                            .tint(Theme.accent)
+                            .foregroundStyle(.black)
                     }
-                    switch store.addPhase {
-                    case .idle:
-                        EmptyView()
-                    case .loading:
-                        HStack(spacing: 8) {
-                            ProgressView()
-                            Text("Fetching feed\u{2026}").font(.footnote).foregroundStyle(.secondary)
-                        }
-                    case .failed(let message):
-                        Label(message, systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("Your feeds") {
-                    if store.feeds.isEmpty {
-                        Text("No feeds yet. Paste an RSS link above, for example a show\u{2019}s feed from its podcast host.")
-                            .foregroundStyle(.secondary)
-                            .font(.footnote)
-                    } else {
-                        ForEach(store.feeds) { feed in
-                            NavigationLink {
-                                PodcastFeedView(feed: feed, player: player)
-                            } label: {
-                                PodcastFeedRow(feed: feed)
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 20) {
+                            ForEach(store.feeds) { feed in
+                                NavigationLink {
+                                    PodcastFeedView(feed: feed, player: player)
+                                } label: {
+                                    ShowCard(feed: feed)
+                                }
+                                .buttonStyle(.press)
+                                .contextMenu {
+                                    Button(role: .destructive) { store.remove(feed) } label: {
+                                        Label("Remove Show", systemImage: "trash")
+                                    }
+                                }
                             }
                         }
-                        .onDelete { indexSet in
-                            for index in indexSet { store.remove(store.feeds[index]) }
-                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 4)
+                        .padding(.bottom, 24)
                     }
+                    .scrollIndicators(.hidden)
                 }
             }
-            .listStyle(.insetGrouped)
-            .navigationTitle("Podcasts")
-            .safeAreaInset(edge: .bottom) {
+            .screenGround()
+            .navigationTitle("Shows")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showAdd = true } label: { Label("Add a Show", systemImage: "plus") }
+                }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 if player.current != nil {
                     PodcastMiniPlayer(player: player)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            .animation(Theme.spring, value: player.current?.id)
         }
+        .tint(Theme.accent)
+        .sheet(isPresented: $showAdd) { AddFeedSheet(store: store) }
         .task {
             // TURNTABLE_PODCAST_FEED in the launch environment adds a feed on open, the
             // same trick TURNTABLE_TAB and TURNTABLE_VIDEO_URL use for headless screenshots.
@@ -74,18 +78,23 @@ struct PodcastsView: View {
     }
 }
 
-private struct PodcastFeedRow: View {
+private struct ShowCard: View {
     let feed: PodcastFeed
 
     var body: some View {
-        HStack(spacing: 12) {
-            PodcastArtwork(url: feed.imageURL, size: Theme.rowArtworkSize)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(feed.title).lineLimit(1)
+        VStack(alignment: .leading, spacing: 8) {
+            PodcastArtwork(url: feed.imageURL)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(feed.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
                 Text("\(feed.episodes.count) episode\(feed.episodes.count == 1 ? "" : "s")")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -96,56 +105,95 @@ struct PodcastFeedView: View {
 
     var body: some View {
         List {
-            ForEach(feed.episodes) { episode in
-                Button {
-                    player.play(episode)
-                } label: {
-                    PodcastEpisodeRow(episode: episode, isCurrent: player.current?.id == episode.id, isPlaying: player.isPlaying)
+            Section {
+                HStack(alignment: .bottom, spacing: 14) {
+                    PodcastArtwork(url: feed.imageURL, size: 100)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(feed.title)
+                            .font(.title3.weight(.bold))
+                            .lineLimit(3)
+                            .multilineTextAlignment(.leading)
+                        Chip(symbol: "waveform", text: "\(feed.episodes.count) episodes")
+                    }
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.plain)
+                .padding(.vertical, 8)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+
+            Section {
+                ForEach(feed.episodes) { episode in
+                    Button { player.play(episode) } label: {
+                        EpisodeRow(
+                            episode: episode,
+                            isCurrent: player.current?.id == episode.id,
+                            isPlaying: player.isPlaying
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparatorTint(Theme.separator)
+                }
+            } header: {
+                Text("Episodes").foregroundStyle(.secondary)
             }
         }
         .listStyle(.plain)
+        .listSectionSpacing(.compact)
+        .scrollContentBackground(.hidden)
+        .screenGround()
         .navigationTitle(feed.title)
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if player.current != nil {
                 PodcastMiniPlayer(player: player)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        .animation(Theme.spring, value: player.current?.id)
     }
 }
 
-private struct PodcastEpisodeRow: View {
+private struct EpisodeRow: View {
     let episode: PodcastFeed.Episode
     let isCurrent: Bool
     let isPlaying: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: isCurrent && isPlaying ? "speaker.wave.2.fill" : "play.circle")
-                .font(.title3)
-                .foregroundStyle(isCurrent ? Theme.accent : Color.secondary)
-                .frame(width: 24)
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(isCurrent ? AnyShapeStyle(Theme.accent.opacity(0.16)) : AnyShapeStyle(.thinMaterial))
+                Circle().strokeBorder(isCurrent ? Theme.accent.opacity(0.45) : Theme.separator, lineWidth: 0.5)
+                Image(systemName: isCurrent && isPlaying ? "waveform" : "play.fill")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(isCurrent ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(.primary))
+            }
+            .frame(width: 34, height: 34)
+
             VStack(alignment: .leading, spacing: 2) {
-                Text(episode.title).lineLimit(2)
-                HStack(spacing: 4) {
+                Text(episode.title)
+                    .font(.subheadline)
+                    .fontWeight(isCurrent ? .semibold : .regular)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                HStack(spacing: 5) {
                     if let pubDate = episode.pubDate {
-                        Text(pubDate, format: .dateTime.month().day().year())
+                        Text(pubDate, format: .dateTime.month(.abbreviated).day().year())
                     }
-                    if let seconds = episode.durationSeconds {
-                        Text("\u{00B7}")
-                        Text(clock(seconds))
-                    }
+                    if episode.pubDate != nil && episode.durationSeconds != nil { Text("\u{00B7}") }
+                    if let seconds = episode.durationSeconds { Text(runtime(seconds)) }
                 }
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             }
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
     }
 
-    private func clock(_ seconds: TimeInterval) -> String {
+    private func runtime(_ seconds: TimeInterval) -> String {
         let total = Int(seconds)
         let hours = total / 3600
         let minutes = (total % 3600) / 60
@@ -153,58 +201,128 @@ private struct PodcastEpisodeRow: View {
     }
 }
 
+/// Floating material pill above the tab bar, the way a system now-playing bar sits: the
+/// content behind it keeps scrolling and the OLED ground is never covered by a grey strip.
 private struct PodcastMiniPlayer: View {
     var player: PodcastPlayerModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            GeometryReader { geo in
-                Rectangle()
-                    .fill(Theme.accent)
-                    .frame(width: geo.size.width * player.progress)
-            }
-            .frame(height: 2)
-            .background(.quaternary)
-            .accessibilityHidden(true)
+        HStack(spacing: 12) {
+            Image(systemName: "waveform")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 36, height: 36)
+                .background(Theme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(player.current?.title ?? "")
-                        .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
-                    Text("\(clock(player.position)) / \(clock(player.duration))")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(player.current?.title ?? "")
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    ProgressTrack(progress: player.progress, height: 3)
+                    Text("\(clockString(player.position)) / \(clockString(player.duration))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .fixedSize()
                 }
-                Spacer(minLength: 0)
-                Button {
-                    player.togglePlayPause()
-                } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.title3)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+
+            Button { player.togglePlayPause() } label: {
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.black)
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(.white))
+            }
+            .buttonStyle(.press)
+            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
         }
-        .background(.bar)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .card(18)
+        .shadow(color: .black.opacity(0.55), radius: 16, y: 6)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+}
+
+/// Adding a feed is the only place a URL field belongs, and it closes itself on success.
+private struct AddFeedSheet: View {
+    var store: PodcastStore
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        @Bindable var store = store
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: "link").foregroundStyle(.tertiary).accessibilityHidden(true)
+                    TextField("", text: $store.pastedFeedURL,
+                              prompt: Text("https://feeds.example.com/show.xml").foregroundStyle(.tertiary))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .submitLabel(.go)
+                        .focused($focused)
+                        .accessibilityLabel("RSS feed URL")
+                        .onSubmit { add() }
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 52)
+                .card(14, material: .thinMaterial)
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+
+                if case .failed(let message) = store.addPhase {
+                    FailureNote(text: message)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 14)
+                        .transition(.opacity)
+                }
+
+                Spacer()
+
+                PrimaryButton(
+                    title: "Add Show",
+                    loading: store.addPhase == .loading,
+                    enabled: !store.pastedFeedURL.trimmingCharacters(in: .whitespaces).isEmpty
+                ) { add() }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 16)
+            }
+            .screenGround()
+            .navigationTitle("Add a Show")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("Cancel") { dismiss() } }
+            }
+        }
+        .tint(Theme.accent)
+        .preferredColorScheme(.dark)
+        .presentationDetents([.height(270)])
+        .presentationDragIndicator(.visible)
+        .onAppear { focused = true }
+        .animation(Theme.spring, value: store.addPhase)
     }
 
-    private func clock(_ seconds: TimeInterval) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let total = Int(seconds)
-        return String(format: "%d:%02d", total / 60, total % 60)
+    private func add() {
+        Task {
+            let before = store.feeds.count
+            await store.addPastedFeed()
+            if store.feeds.count > before { dismiss() }
+        }
     }
 }
 
 /// Reserves space before load and holds a hairline outline, same treatment as ArtworkTile.
 struct PodcastArtwork: View {
     let url: URL?
-    let size: CGFloat
+    /// nil fills the space it is given; a number pins it to that square.
+    var size: CGFloat?
+
+    private var radius: CGFloat { min(size ?? 160, 160) * 0.17 }
 
     var body: some View {
         AsyncImage(url: url) { phase in
@@ -212,14 +330,15 @@ struct PodcastArtwork: View {
                 image.resizable().scaledToFill()
             } else {
                 Rectangle().fill(.quaternary)
-                    .overlay { Image(systemName: "dot.radiowaves.left.and.right").foregroundStyle(.secondary) }
+                    .overlay { Image(systemName: "waveform").font(.title2).foregroundStyle(.tertiary) }
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: Theme.artworkRadius, style: .continuous))
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: Theme.artworkRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Theme.separator, lineWidth: 0.5)
         )
     }
 }

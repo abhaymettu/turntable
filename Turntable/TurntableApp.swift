@@ -10,6 +10,8 @@ struct TurntableApp: App {
     @State private var routes = RouteLogger()
     @Environment(\.scenePhase) private var scenePhase
 
+    init() { Theme.installBarAppearance() }
+
     var body: some Scene {
         WindowGroup {
             Group {
@@ -24,6 +26,7 @@ struct TurntableApp: App {
             .environment(agent)
             .environment(routes)
             .tint(Theme.accent)
+            .preferredColorScheme(.dark)
             .onChange(of: scenePhase, initial: true) { _, phase in
                 // The check-in loop runs from first foreground onward, background included.
                 // The audio background mode keeps the process alive while music plays;
@@ -38,6 +41,7 @@ struct TurntableApp: App {
                 if paired {
                     routes.start()
                     agent.start(player: player)
+                    Task { await AppDelegate.requestNotifications() }
                 } else {
                     agent.stop()
                 }

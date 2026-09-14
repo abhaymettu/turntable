@@ -106,45 +106,158 @@ final class RouteLogger {
     }
 }
 
-struct DebugLogView: View {
+/// Everything a developer needs and nobody else does: which server this phone follows, what
+/// the link is doing, and the raw log. One gear on the main screen leads here, and nothing
+/// from this file appears anywhere else in the app. A grouped list is the right shape here
+/// precisely because this is the settings page the main screens refuse to be.
+struct AdvancedView: View {
+    @Environment(AgentLink.self) private var agent
+    @Environment(RouteLogger.self) private var routes
     @Environment(\.dismiss) private var dismiss
-    private var log = DebugLog.shared
+    @State private var pairing = Pairing.shared
+    @State private var confirmUnpair = false
 
     var body: some View {
         NavigationStack {
-            Group {
-                if log.entries.isEmpty {
-                    ContentUnavailableView(
-                        "Nothing logged yet",
-                        systemImage: "text.alignleft",
-                        description: Text("Route changes and agent check-ins show up here.")
-                    )
-                } else {
-                    List(log.entries.reversed()) { entry in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(entry.tag).font(.caption.weight(.semibold))
-                                Spacer()
-                                Text(entry.at, format: .dateTime.hour().minute().second())
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
-                            Text(entry.message).font(.footnote)
-                        }
-                        .padding(.vertical, 2)
+            List {
+                Section("Link") {
+                    LabeledContent("State") {
+                        Label(linkWord, systemImage: linkSymbol)
+                            .labelStyle(.titleAndIcon)
+                            .imageScale(.small)
+                            .foregroundStyle(agent.link == .online ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(.secondary))
                     }
-                    .listStyle(.plain)
+                    if let reason = agent.offlineReason {
+                        LabeledContent("Reason") {
+                            Text(reason).multilineTextAlignment(.trailing)
+                        }
+                    }
+                    LabeledContent("Last check-in",
+                                   value: agent.lastContact.map { $0.formatted(date: .omitted, time: .standard) } ?? "none yet")
+                    LabeledContent("Interval", value: "15 s")
+                }
+
+                Section("Server") {
+                    LabeledContent("Address") {
+                        Text(pairing.serverURL?.absoluteString ?? "unpaired")
+                            .font(.footnote.monospaced())
+                            .multilineTextAlignment(.trailing)
+                    }
+                    LabeledContent("Token", value: pairing.token == nil ? "none" : "held in Keychain")
+                }
+
+                Section("This Phone") {
+                    LabeledContent("Device ID") {
+                        Text(Config.deviceID)
+                            .font(.footnote.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    LabeledContent("App version", value: Config.appVersion)
+                    LabeledContent("Audio output", value: routes.outputLabel)
+                }
+
+                Section {
+                    NavigationLink {
+                        DebugLogView()
+                    } label: {
+                        LabeledContent {
+                            Text("\(DebugLog.shared.entries.count)").monospacedDigit()
+                        } label: {
+                            Label {
+                                Text("Debug Log")
+                            } icon: {
+                                Image(systemName: "text.alignleft").foregroundStyle(Theme.accent)
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    Button("Pair with Another Server", role: .destructive) { confirmUnpair = true }
+                } footer: {
+                    Text("Turntable goes back to the welcome screen and needs a fresh pairing code.")
                 }
             }
-            .navigationTitle("Debug log")
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .screenGround()
+            .navigationTitle("Advanced")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Clear") { log.clear() }.disabled(log.entries.isEmpty)
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
+            .confirmationDialog("Unpair this phone?", isPresented: $confirmUnpair, titleVisibility: .visible) {
+                Button("Unpair", role: .destructive) {
+                    Pairing.shared.unpair()
+                    dismiss()
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                Button("Cancel", role: .cancel) { }
+            }
+        }
+        .tint(Theme.accent)
+        .preferredColorScheme(.dark)
+    }
+
+    private var linkWord: String {
+        switch agent.link {
+        case .idle: "Paused"
+        case .online: "Online"
+        case .offline: "Offline"
+        }
+    }
+
+    private var linkSymbol: String {
+        switch agent.link {
+        case .idle: "pause.circle"
+        case .online: "antenna.radiowaves.left.and.right"
+        case .offline: "antenna.radiowaves.left.and.right.slash"
+        }
+    }
+}
+
+struct DebugLogView: View {
+    private var log = DebugLog.shared
+
+    var body: some View {
+        Group {
+            if log.entries.isEmpty {
+                ContentUnavailableView {
+                    Label("Nothing Logged Yet", systemImage: "text.alignleft")
+                } description: {
+                    Text("Route changes and agent check-ins land here.")
                 }
+            } else {
+                List(log.entries.reversed()) { entry in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(entry.tag.uppercased())
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(Theme.accent)
+                            Spacer()
+                            Text(entry.at, format: .dateTime.hour().minute().second())
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                        }
+                        Text(entry.message)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.vertical, 3)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparatorTint(Theme.separator)
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
+        }
+        .screenGround()
+        .navigationTitle("Debug Log")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Clear") { log.clear() }.disabled(log.entries.isEmpty)
             }
         }
     }

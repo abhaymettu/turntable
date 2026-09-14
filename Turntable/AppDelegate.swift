@@ -9,19 +9,32 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // Notifications are asked for after pairing, not on the welcome screen: before the
+        // phone follows a server there is nothing to notify about, and a permission alert
+        // over a first-run screen is a prompt with no context.
         Task { @MainActor in
-            let center = UNUserNotificationCenter.current()
-            do {
-                let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
-                DebugLog.shared.add("apns", granted ? "notification permission granted" : "notification permission denied")
-                if granted {
-                    UIApplication.shared.registerForRemoteNotifications()
-                }
-            } catch {
-                DebugLog.shared.add("apns", "authorization request failed: \(error.localizedDescription)")
-            }
+            guard Pairing.shared.isPaired else { return }
+            await Self.requestNotifications()
         }
         return true
+    }
+
+    @MainActor
+    static func requestNotifications() async {
+        let center = UNUserNotificationCenter.current()
+        guard await center.notificationSettings().authorizationStatus == .notDetermined else {
+            if await center.notificationSettings().authorizationStatus == .authorized {
+                UIApplication.shared.registerForRemoteNotifications()
+            }
+            return
+        }
+        do {
+            let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+            DebugLog.shared.add("apns", granted ? "notification permission granted" : "notification permission denied")
+            if granted { UIApplication.shared.registerForRemoteNotifications() }
+        } catch {
+            DebugLog.shared.add("apns", "authorization request failed: \(error.localizedDescription)")
+        }
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {

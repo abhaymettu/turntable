@@ -43,18 +43,33 @@ struct YouTubePlayerView: UIViewRepresentable {
     }
 }
 
+/// Video. The player is the screen; pasting a link is a sheet. A 16:9 slab holds the same
+/// place whether something is loaded or not, so the layout never collapses.
 struct VideoView: View {
     @State private var model = VideoModel()
+    @State private var showPaste = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                playerArea
-                Divider()
-                controls
+                stage
+                    .padding(.horizontal, 20)
+                recents
+                Spacer(minLength: 0)
             }
+            .padding(.top, 4)
+            .screenGround()
             .navigationTitle("Video")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showPaste = true } label: { Label("Paste a Link", systemImage: "link.badge.plus") }
+                }
+            }
         }
+        .tint(Theme.accent)
+        .sheet(isPresented: $showPaste) { PasteLinkSheet(model: model) }
+        .animation(Theme.spring, value: model.phase)
         .task {
             // TURNTABLE_VIDEO_URL in the launch environment loads a video on open, the same
             // trick TURNTABLE_TAB uses, since `xcrun simctl launch` cannot tap the Play button.
@@ -64,74 +79,215 @@ struct VideoView: View {
         }
     }
 
+    // MARK: The stage
+
     @ViewBuilder
-    private var playerArea: some View {
+    private var stage: some View {
         switch model.phase {
         case .empty:
-            ContentUnavailableView {
-                Label("No video loaded", systemImage: "play.rectangle")
-            } description: {
-                Text("Paste a YouTube link below. It plays right here, in the visible player.")
+            slab {
+                VStack(spacing: 10) {
+                    Image(systemName: "play.rectangle.on.rectangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(Theme.accent)
+                    VStack(spacing: 3) {
+                        Text("Nothing loaded yet").font(.headline)
+                        Text("Paste a YouTube link and it plays right here.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Paste a Link") { showPaste = true }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .tint(Theme.accent)
+                        .foregroundStyle(.black)
+                }
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .loading(let id):
-            YouTubePlayerView(videoID: id)
-                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            player(id: id)
+            HStack(spacing: 7) {
+                ProgressView().controlSize(.small)
+                Text("Loading\u{2026}").font(.footnote).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.top, 12)
         case .playing(let id, let title):
-            VStack(alignment: .leading, spacing: 8) {
-                YouTubePlayerView(videoID: id)
-                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(2)
-                    .padding(.horizontal)
-            }
-            .padding(.top, 8)
+            player(id: id)
+            Text(title)
+                .font(.headline)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 12)
         case .failed(let message):
-            ContentUnavailableView {
-                Label("Couldn\u{2019}t load that link", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(message)
+            slab {
+                VStack(spacing: 10) {
+                    Image(systemName: "link.badge.plus")
+                        .font(.largeTitle)
+                        .foregroundStyle(Theme.accent)
+                    Text("That link didn\u{2019}t resolve").font(.headline)
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 24)
+                    Button("Try Another Link") { showPaste = true }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .tint(Theme.accent)
+                        .foregroundStyle(.black)
+                }
+                .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    private var controls: some View {
-        List {
-            Section("Paste a link") {
-                HStack {
-                    TextField("https://youtube.com/watch?v=\u{2026}", text: $model.pastedURL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .submitLabel(.go)
-                        .accessibilityLabel("YouTube link")
-                        .onSubmit { Task { await model.submitPastedURL() } }
-                    Button("Play") { Task { await model.submitPastedURL() } }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(model.pastedURL.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-            }
-            if !model.recents.isEmpty {
-                Section("Recent") {
+    private func slab<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity)
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .card(Theme.artRadius)
+    }
+
+    private func player(id: String) -> some View {
+        YouTubePlayerView(videoID: id)
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .background(Color.black)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.artRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.artRadius, style: .continuous)
+                    .strokeBorder(Theme.separator, lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.7), radius: 20, y: 10)
+    }
+
+    // MARK: Recents
+
+    @ViewBuilder
+    private var recents: some View {
+        if model.recents.isEmpty {
+            // Sits under the slab rather than floating in the middle of the leftover space.
+            Label("Links you play show up here for next time.", systemImage: "clock.arrow.circlepath")
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
+                .padding(.top, 18)
+        } else {
+            // A real section header inside the list, so the header and the first row share
+            // one inset instead of the row separator cutting across the heading.
+            List {
+                Section {
                     ForEach(model.recents) { recent in
                         Button { Task { await model.play(id: recent.id) } } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(recent.title).lineLimit(1)
-                                Text(recent.addedAt, format: .dateTime.month().day().hour().minute())
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                            RecentRow(recent: recent)
                         }
                         .buttonStyle(.plain)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparatorTint(Theme.separator)
                     }
                     .onDelete { indexSet in
                         for index in indexSet { model.forget(model.recents[index]) }
                     }
+                } header: {
+                    Text("Recent").foregroundStyle(.secondary)
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .padding(.top, 10)
         }
-        .listStyle(.insetGrouped)
+    }
+}
+
+private struct RecentRow: View {
+    let recent: VideoModel.Recent
+
+    /// YouTube's public thumbnail host. No key, the same origin family as the oEmbed call
+    /// the model already makes for the title.
+    private var thumbnail: URL? {
+        URL(string: "https://img.youtube.com/vi/\(recent.id)/mqdefault.jpg")
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AsyncImage(url: thumbnail) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    Rectangle().fill(.quaternary)
+                        .overlay { Image(systemName: "play.fill").font(.caption).foregroundStyle(.tertiary) }
+                }
+            }
+            .frame(width: 72, height: 41)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Theme.separator, lineWidth: 0.5))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(recent.title).font(.subheadline).lineLimit(2)
+                Text(recent.addedAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "play.circle").foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+/// One field, one button, and it closes itself once the link resolves.
+private struct PasteLinkSheet: View {
+    var model: VideoModel
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        @Bindable var model = model
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: "link").foregroundStyle(.tertiary).accessibilityHidden(true)
+                    TextField("", text: $model.pastedURL,
+                              prompt: Text("https://youtube.com/watch?v=\u{2026}").foregroundStyle(.tertiary))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .submitLabel(.go)
+                        .focused($focused)
+                        .accessibilityLabel("YouTube link")
+                        .onSubmit { play() }
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 52)
+                .card(14, material: .thinMaterial)
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+
+                Spacer()
+
+                PrimaryButton(title: "Play", symbol: "play.fill",
+                              enabled: !model.pastedURL.trimmingCharacters(in: .whitespaces).isEmpty) { play() }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 16)
+            }
+            .screenGround()
+            .navigationTitle("Paste a Link")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("Cancel") { dismiss() } }
+            }
+        }
+        .tint(Theme.accent)
+        .preferredColorScheme(.dark)
+        .presentationDetents([.height(250)])
+        .presentationDragIndicator(.visible)
+        .onAppear { focused = true }
+    }
+
+    private func play() {
+        Task {
+            await model.submitPastedURL()
+            dismiss()
+        }
     }
 }

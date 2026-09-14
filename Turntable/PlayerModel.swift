@@ -48,6 +48,8 @@ final class PlayerModel {
 
     private let player = ApplicationMusicPlayer.shared
     private var audioSessionReady = false
+    /// Set by the screenshot seed below; stops the ticker overwriting the seeded state.
+    private var seeded = false
     private var cancellables: Set<AnyCancellable> = []
     private var ticker: Task<Void, Never>?
 
@@ -73,6 +75,19 @@ final class PlayerModel {
         readQueue()
         readState()
         startTicker()
+        seedForScreenshots()
+    }
+
+    /// TURNTABLE_FAKE_NOW_PLAYING=1 fills the now-playing card so the composed playing state
+    /// can be captured headlessly, the same launch-environment trick TURNTABLE_TAB uses. The
+    /// real player overwrites it the moment anything actually plays.
+    private func seedForScreenshots() {
+        guard ProcessInfo.processInfo.environment["TURNTABLE_FAKE_NOW_PLAYING"] == "1" else { return }
+        current = NowPlaying(entryID: "preview", songID: nil, title: "Sample Track",
+                             artist: "Sample Artist", artwork: nil, duration: 214)
+        position = 78
+        isPlaying = true
+        seeded = true
     }
 
     // MARK: Queueing
@@ -243,6 +258,7 @@ final class PlayerModel {
     // MARK: State
 
     private func readQueue() {
+        guard !seeded else { return }
         entries = Array(player.queue.entries)
         if let entry = player.queue.currentEntry {
             var songID: String?
@@ -266,6 +282,7 @@ final class PlayerModel {
     }
 
     private func readState() {
+        guard !seeded else { return }
         isPlaying = player.state.playbackStatus == .playing
     }
 
@@ -273,7 +290,7 @@ final class PlayerModel {
         ticker = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
-                guard let self else { return }
+                guard let self, !self.seeded else { continue }
                 self.position = self.player.playbackTime
             }
         }
