@@ -2,10 +2,14 @@ import SwiftUI
 
 /// First run, and the whole of it: three numbered steps on one screen.
 ///
-/// Copy the prompt, hand it to an agent, type back the six characters it answers with.
-/// There is no address field, because there is nothing here a person could be expected to
-/// know. The app finds the server on the local network, and the address it keeps afterwards
-/// is the one the server names in its pairing reply.
+/// Copy the prompt, hand it to an agent, enter the one code it answers with. There is no
+/// address field and no second path, because there is nothing here a person could be
+/// expected to know. Which code they get is the server's decision, not theirs: six
+/// characters when it is sitting on this Wi-Fi and the app can find it, a longer `TT1-`
+/// code carrying its own address when it is not. Both go in the same field.
+///
+/// Either way the address the phone keeps afterwards is the one the server names in its
+/// pairing reply, never the one in the code.
 struct PairingView: View {
     @State private var pairing = Pairing.shared
     @State private var discovery = ServerDiscovery()
@@ -15,23 +19,28 @@ struct PairingView: View {
     @State private var failure: String?
     @FocusState private var codeFocused: Bool
 
-    /// Same alphabet the server mints from: Crockford base32 without the look-alikes.
-    private static let codeCharacters = Set("23456789ABCDEFGHJKMNPQRSTVWXYZ")
+    private static let codeStepID = "code-step"
+
+    private var reading: PairingCode.Reading { PairingCode.read(code) }
+
+    private var isLongCode: Bool { PairingCode.isLong(code) }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 12) {
-                    intro
-                    copyStep
-                    handOffStep
-                    codeStep
+            ScrollViewReader { scroller in
+                ScrollView {
+                    VStack(spacing: 12) {
+                        intro
+                        copyStep
+                        handOffStep
+                        codeStep(scroller)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 8)
+                .scrollDismissesKeyboard(.interactively)
+                .safeAreaInset(edge: .bottom) { footer }
             }
-            .scrollDismissesKeyboard(.interactively)
-            .safeAreaInset(edge: .bottom) { footer }
             .screenGround()
             .navigationTitle("Set Up Turntable")
             .navigationBarTitleDisplayMode(.inline)
@@ -39,6 +48,7 @@ struct PairingView: View {
         .tint(Theme.accent)
         .preferredColorScheme(.dark)
         .animation(Theme.spring, value: failure)
+        .animation(Theme.quick, value: isLongCode)
         .task {
             discovery.start()
             prefillFromLaunchEnvironment()
@@ -113,32 +123,55 @@ struct PairingView: View {
 
     private var handOffStep: some View {
         StepCard(number: 2, title: "Paste it to your coding agent") {
-            Text("Any agent with a shell on the machine that runs the server. It does the rest.")
+            Text("Any agent with a shell. It works out where to run the server and sends back one code.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private var codeStep: some View {
+    private func codeStep(_ scroller: ScrollViewProxy) -> some View {
         StepCard(number: 3, title: "Enter the code it sends back") {
             VStack(alignment: .leading, spacing: 12) {
                 CodeField(code: $code, focused: $codeFocused)
                     .onChange(of: code) { old, new in
                         code = Self.clean(new)
-                        if code.count > old.count { Haptics.selection() }
-                        if code.count == 6 { pair() }
+                        if code.count > old.count, !isLongCode { Haptics.selection() }
+                        // A long code makes this card tall enough to push its own status
+                        // line under the action bar, and that line is the one saying where
+                        // the code points. Bring the step back into view when it grows.
+                        if isLongCode {
+                            // One layout pass later: the card has not grown yet at the
+                            // moment the text changes, and scrolling to where it used to
+                            // end leaves the line under the bar.
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(60))
+                                withAnimation(Theme.spring) {
+                                    scroller.scrollTo(Self.codeStepID, anchor: .bottom)
+                                }
+                            }
+                        }
+                        if case .ready = reading { pair() }
                     }
+
+                // Pasting is the system's job and it already does it: long-press the field
+                // and the edit menu offers Paste, for six characters or for sixty. A
+                // PasteButton of our own would be a second filled capsule next to the one
+                // prominent button on the screen, and it only renders at all in the system's
+                // prominent style, so it is not here.
                 Label {
-                    Text(discoveryWord)
+                    Text(status.words)
+                        .fixedSize(horizontal: false, vertical: true)
                 } icon: {
-                    Image(systemName: discoverySymbol)
+                    Image(systemName: status.symbol)
                         .imageScale(.small)
                 }
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .id(Self.codeStepID)
     }
 
     // MARK: Footer
@@ -150,7 +183,7 @@ struct PairingView: View {
                 FailureNote(text: failure)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            PrimaryButton(title: "Pair This Phone", loading: working, enabled: code.count == 6) {
+            PrimaryButton(title: "Pair This Phone", loading: working, enabled: reading.isReady) {
                 pair()
             }
         }
@@ -160,8 +193,24 @@ struct PairingView: View {
         .background(.bar)
     }
 
-    /// Discovery is reported in words, never as a spinner that means nothing. Three states,
-    /// three glyph shapes, so it reads with the colour off.
+    /// One line under the field, about the code in the field. Never a spinner that means
+    /// nothing, and every state has its own glyph shape so it reads with the colour off.
+    /// Failures from an actual pairing attempt belong to the footer, not here.
+    private var status: (symbol: String, words: String) {
+        switch reading {
+        case .ready(.remote(let url, _)):
+            ("globe", "This code points at \(url.host() ?? url.absoluteString)")
+        case .rejected(let failure):
+            ("exclamationmark.triangle", failure.errorDescription ?? "That code cannot be used.")
+        case .incomplete where isLongCode:
+            ("ellipsis", "That code is cut short. Paste the whole thing.")
+        default:
+            (discovery.candidates.isEmpty ? "wifi" : "checkmark.circle", discoveryWord)
+        }
+    }
+
+    /// Discovery is reported in words too. It only matters for a six character code, which
+    /// is why it is the default line and not the only one.
     private var discoveryWord: String {
         if let first = discovery.candidates.first, discovery.candidates.count == 1 {
             return "Server found at \(first.host() ?? first.absoluteString)"
@@ -172,25 +221,39 @@ struct PairingView: View {
         return "Looking for the server on this Wi-Fi"
     }
 
-    private var discoverySymbol: String {
-        discovery.candidates.isEmpty ? "wifi" : "checkmark.circle"
-    }
-
     // MARK: Logic
 
+    /// What the field is allowed to hold. A six character code is folded to the server's
+    /// uppercase alphabet as it is typed; a `TT1-` code is base64url, where case carries
+    /// meaning, so it is kept exactly as pasted minus whitespace.
     private static func clean(_ raw: String) -> String {
-        String(raw.uppercased().filter(codeCharacters.contains).prefix(6))
+        let text = String(raw.filter { !$0.isWhitespace })
+        if PairingCode.isLong(text) {
+            return String(text.prefix(PairingCode.maxLength))
+        }
+        // "T", "TT", "TT1": someone typing a long code out by hand, mid-prefix. Without
+        // this the "1" is filtered away as not-in-alphabet and the prefix never forms.
+        if !text.isEmpty, PairingCode.prefix.hasPrefix(text.uppercased()) {
+            return text.uppercased()
+        }
+        return String(text.uppercased().filter(PairingCode.alphabet.contains).prefix(PairingCode.lanLength))
     }
 
     private func pair() {
-        guard !working, code.count == 6 else { return }
+        guard !working, case .ready(let parsed) = reading else { return }
         codeFocused = false
         working = true
         failure = nil
         Task {
             do {
-                let found = await discovery.addresses(waitingUpTo: .seconds(6))
-                try await pairing.pair(code: code, candidates: found)
+                switch parsed {
+                case .remote:
+                    // The code names the one address worth trying. Discovery has nothing to
+                    // add: a server in a data centre does not announce itself on this Wi-Fi.
+                    try await pairing.pair(parsed)
+                case .lan:
+                    try await pairing.pair(parsed, candidates: await discovery.addresses(waitingUpTo: .seconds(6)))
+                }
                 Haptics.notify(.success)
             } catch {
                 Haptics.notify(.error)
@@ -201,31 +264,25 @@ struct PairingView: View {
         }
     }
 
-    /// TURNTABLE_PAIR_CODE types the six characters, the same headless-screenshot hook as
-    /// TURNTABLE_TAB, because `simctl` cannot tap. It stands in for the keyboard and for
-    /// nothing else: the code is redeemed against whatever discovery found, through the
-    /// same call the button makes. TURNTABLE_PAIR_ADDRESS additionally stands in for
-    /// discovery, for the case where the two machines cannot see each other.
+    /// TURNTABLE_PAIR_CODE fills the field, the same headless-screenshot hook as
+    /// TURNTABLE_TAB, because `simctl` cannot tap or paste. It stands in for the keyboard
+    /// and for nothing else: either shape of code goes in here and takes exactly the route
+    /// it takes when a person enters it, because the field's own onChange calls pair().
     private func prefillFromLaunchEnvironment() {
-        let env = ProcessInfo.processInfo.environment
-        guard let seedCode = env["TURNTABLE_PAIR_CODE"] else { return }
-        code = Self.clean(seedCode)
-        guard code.count == 6 else { return }
-
-        if let address = env["TURNTABLE_PAIR_ADDRESS"], let base = Pairing.normalize(address) {
-            working = true
-            Task {
-                do { try await pairing.pair(code: code, candidates: [base]) } catch { report(error) }
-                working = false
-            }
-        }
-        // A full code pairs itself: the field's own onChange calls pair(), which waits for
-        // discovery the same way it does when a person finishes typing.
+        guard let seed = ProcessInfo.processInfo.environment["TURNTABLE_PAIR_CODE"] else { return }
+        DebugLog.shared.add("pair", "seeding code from launch environment")
+        code = Self.clean(seed)
     }
 
+    /// A failure about the code empties the field, because the next step is a new code. A
+    /// failure about the network does not: the code is still good, and making someone paste
+    /// ninety characters again to retry a connection would be a punishment for their Wi-Fi.
     private func report(_ error: Error) {
         failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        code = ""
+        switch error as? Pairing.Failure {
+        case .cannotReach, .noInternet, .noServerFound: break
+        default: code = ""
+        }
     }
 }
 
@@ -261,8 +318,11 @@ private struct StepCard<Content: View>: View {
     }
 }
 
-/// Six glyph cells over one hidden field. Typing fills the cells; the live cell carries an
-/// ember outline and a caret, so the focus point reads without relying on colour.
+/// One field, two faces. Six glyph cells for a six character code, where the live cell
+/// carries an ember outline and a caret so the focus point reads without relying on colour.
+/// One wrapped monospaced block for a `TT1-` code, which is pasted rather than typed and is
+/// far too long for cells. Both sit over the same hidden text field, so there is one place
+/// a code goes in no matter which one the agent sent.
 private struct CodeField: View {
     @Binding var code: String
     @FocusState.Binding var focused: Bool
@@ -272,7 +332,10 @@ private struct CodeField: View {
         ZStack {
             TextField("", text: $code)
                 .keyboardType(.asciiCapable)
-                .textInputAutocapitalization(.characters)
+                // The six character codes are folded to uppercase as they are typed. A
+                // long code is base64url, where case is data, so the keyboard must not
+                // touch it.
+                .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textContentType(.oneTimeCode)
                 .focused($focused)
@@ -280,9 +343,15 @@ private struct CodeField: View {
                 .tint(.clear)
                 .accessibilityLabel("Pairing code")
 
-            HStack(spacing: 8) {
-                ForEach(0..<6, id: \.self) { index in
-                    cell(index)
+            Group {
+                if PairingCode.isLong(code) {
+                    longCode
+                } else {
+                    HStack(spacing: 8) {
+                        ForEach(0..<6, id: \.self) { index in
+                            cell(index)
+                        }
+                    }
                 }
             }
             .allowsHitTesting(false)
@@ -295,6 +364,28 @@ private struct CodeField: View {
                 caretOn.toggle()
             }
         }
+    }
+
+    /// The whole code, wrapped over as many as four lines. This is the one chance anybody
+    /// has to see that what landed in the field is what their agent sent, so it is shown
+    /// rather than summarised, and anything longer loses its middle rather than its tail.
+    private var longCode: some View {
+        Text(code)
+            .font(.footnote.monospaced())
+            .lineLimit(4, reservesSpace: false)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .frame(minHeight: 56)
+            .background(.regularMaterial,
+                        in: RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous)
+                    .strokeBorder(focused ? Theme.accent : Theme.separator,
+                                  lineWidth: focused ? 1.6 : 0.5)
+            )
+            .animation(Theme.quick, value: focused)
     }
 
     private func cell(_ index: Int) -> some View {

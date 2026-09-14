@@ -19,7 +19,9 @@ token is generated on first start and written to server/auth.json; read it from 
 """
 
 import atexit
+import base64
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
@@ -29,6 +31,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 STATE_LOCK = threading.Lock()
@@ -56,6 +59,26 @@ CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
 CODE_LENGTH = 6
 CODE_TTL_S = 15 * 60
 CODE_MAX_TRIES = 10
+
+# The second shape of pairing code, minted only when TURNTABLE_PUBLIC_URL is set. It
+# carries the address the phone should redeem against, because a server that is not on
+# the phone's Wi-Fi cannot be discovered from the phone. Versioned in the prefix: a
+# future format is a different prefix, and an app that does not know it says so instead
+# of guessing.
+#
+# Payload is "<url>\n<secret>" in UTF-8, base64url, unpadded. Base64url so nothing in it
+# reads as a link and gets mangled by a messaging app on the way, and so the whole thing
+# survives copy and paste as one word.
+#
+# What is NOT in it: the agent's bearer token. The payload is a single-use secret that
+# dies in 15 minutes and is stored here only as a sha256, so a code someone else reads
+# buys them one race against the clock, not an account.
+REMOTE_CODE_PREFIX = "TT1-"
+# 16 of a 30 symbol alphabet is about 78 bits. Six characters (~29 bits) is enough behind
+# a ten-guess burn on a network you have to already be on; a remote server can be reached
+# from anywhere, so its secret is sized for that.
+REMOTE_SECRET_LENGTH = 16
+MAX_PUBLIC_URL_LENGTH = 200
 
 AUTH_LOCK = threading.Lock()
 
@@ -105,9 +128,9 @@ def token_is_valid(token):
     return _hash(token) in auth["devices"]
 
 
-def mint_code():
-    """Mint one pairing code, store only its hash with a 15 minute expiry, return it."""
-    code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
+def mint_code(length=CODE_LENGTH):
+    """Mint one pairing secret, store only its hash with a 15 minute expiry, return it."""
+    code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(length))
     now = time.time()
     with AUTH_LOCK:
         auth = _read_auth()
@@ -123,10 +146,80 @@ def normalize_code(raw):
     return "".join(c for c in raw.upper() if c.isalnum())
 
 
+PRIVATE_SUFFIXES = (".local", ".ts.net", ".internal")
+
+
+def is_private_host(host):
+    """True for hosts whose traffic stays on a network the phone is already on.
+
+    Deliberately narrow, and deliberately identical to the same list in the app
+    (`PairingCode.isPrivate`): if the two disagree, this mints codes the app refuses.
+    Not `ipaddress.is_private`, which is both wider (0.0.0.0/8, 198.18/15) and narrower
+    (it excludes 100.64/10, which is exactly where Tailscale addresses live).
+    """
+    host = host.lower().strip("[]")
+    if host == "localhost" or host.endswith(PRIVATE_SUFFIXES):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.version == 4:
+        a, b = ip.packed[0], ip.packed[1]
+        return (
+            a in (10, 127)
+            or (a, b) == (192, 168)
+            or (a == 172 and 16 <= b <= 31)
+            or (a, b) == (169, 254)
+            or (a == 100 and 64 <= b <= 127)
+        )
+    return ip.is_loopback or ip.is_link_local or (ip.packed[0] & 0xFE) == 0xFC
+
+
+def public_url_problem(url):
+    """Why this address cannot go in a pairing code, or None if it can.
+
+    Checked here rather than left to the app, so an agent finds out at --pair time
+    instead of a human finding out by pasting a code that will not work.
+    """
+    if len(url) > MAX_PUBLIC_URL_LENGTH:
+        return "is longer than %d characters" % MAX_PUBLIC_URL_LENGTH
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        return "does not start with http:// or https://"
+    try:
+        port = parts.port
+    except ValueError:
+        return "has a port that is not a usable number"
+    if not parts.hostname:
+        return "has no host in it"
+    if len(parts.hostname) > 128:
+        return "has a host longer than 128 characters"
+    if parts.username or parts.password:
+        return "carries a username or password, which a pairing code must not"
+    if parts.query or parts.fragment:
+        return "carries a query or a fragment, which a pairing code must not"
+    if port is not None and not 1 <= port <= 65535:
+        return "has a port outside 1-65535"
+    if parts.scheme == "http" and not is_private_host(parts.hostname):
+        return (
+            "is a public address over plain http. The pairing secret would cross the "
+            "internet in clear text, and the device token would come back the same way. "
+            "Use https, or an address on a private network or tailnet"
+        )
+    return None
+
+
+def remote_code(secret, url):
+    """Pack a reachable address and a pairing secret into one string a human can paste."""
+    payload = ("%s\n%s" % (url, secret)).encode("utf-8")
+    return REMOTE_CODE_PREFIX + base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
 def redeem_code(raw, device_id):
     """Trade a pairing code for a device token. Returns (token, None) or (None, reason)."""
     code = normalize_code(raw)
-    if len(code) != CODE_LENGTH:
+    if len(code) not in (CODE_LENGTH, REMOTE_SECRET_LENGTH):
         return None, "bad code"
     digest = _hash(code)
     now = time.time()
@@ -170,9 +263,10 @@ def responder_argv(port):
 
 
 NO_RESPONDER_HELP = (
-    "no dns-sd or avahi-publish-service on this machine, so a freshly installed phone "
-    "cannot find this server and pairing will fail. On Linux: install avahi-utils and "
-    "start avahi-daemon. Otherwise run the server on a machine that has one."
+    "no dns-sd or avahi-publish-service on this machine, so a phone on this Wi-Fi cannot "
+    "find this server by itself. Two ways out: install avahi-utils and start avahi-daemon "
+    "(Linux), or restart with TURNTABLE_PUBLIC_URL set to an address the phone can reach, "
+    "which makes --pair print one long code that carries the address and needs no discovery."
 )
 
 
@@ -184,8 +278,10 @@ def advertise(port):
     how it does that, and it is the only reason this exists: the address the phone
     keeps afterwards is the one POST /pair hands back, not the one it discovered.
 
-    With no responder the server still runs and still serves every endpoint, but first
-    run has no way in: the app's address field lives behind pairing, not in front of it.
+    With no responder the server still runs and still serves every endpoint, and a phone
+    on this Wi-Fi has no way in. The way out is not an address field in the app, which
+    does not exist before pairing: it is TURNTABLE_PUBLIC_URL, which makes --pair mint a
+    code that carries the address itself.
     """
     argv = responder_argv(port)
     if argv is None:
@@ -457,19 +553,45 @@ class Handler(BaseHTTPRequestHandler):
     do_DELETE = do_PATCH = do_PUT
 
 
+def pair_command(port):
+    """Mint one code and print it, in whichever of the two shapes this server can be paired in.
+
+    The agent does not choose the shape and neither does the human: where the server is
+    decides. TURNTABLE_PUBLIC_URL set means the phone is expected to reach a named address,
+    so the address rides along inside the code. Unset means the phone is expected to find
+    this server on the local network, so six characters is the whole of it.
+    """
+    if PUBLIC_URL:
+        problem = public_url_problem(PUBLIC_URL)
+        if problem:
+            print("TURNTABLE_PUBLIC_URL is %s, and it %s." % (PUBLIC_URL, problem), file=sys.stderr)
+            print("No code was minted. Fix the address, restart the server, and run --pair again.",
+                  file=sys.stderr)
+            return 1
+        secret = mint_code(REMOTE_SECRET_LENGTH)
+        print("pairing code: %s" % remote_code(secret, PUBLIC_URL))
+        print("carries this address: %s" % PUBLIC_URL)
+        print("good for 15 minutes, one phone. Send that one code string whole, and nothing else.")
+        return 0
+
+    print("pairing code: %s" % mint_code())
+    print("server address: %s" % lan_address(port))
+    print("good for 15 minutes, one phone. Run this again for another code.")
+    # Said here as well as at startup, because this is the moment an agent is about to
+    # hand six characters to a person whose phone has no other way in.
+    if responder_argv(port) is None:
+        print("warning: %s" % NO_RESPONDER_HELP, file=sys.stderr)
+    else:
+        print("this server is announced on the local network, so the phone finds it itself: "
+              "send the six characters and nothing else.")
+    return 0
+
+
 def main():
     port = int(os.environ.get("TURNTABLE_PORT", "8787"))
     ensure_agent_token()
     if "--pair" in sys.argv[1:]:
-        code = mint_code()
-        print("pairing code: %s" % code)
-        print("server address: %s" % lan_address(port))
-        print("good for 15 minutes, one phone. Run this again for another code.")
-        # Said here as well as at startup, because this is the moment an agent is about
-        # to hand six characters to a person whose phone has no other way in.
-        if responder_argv(port) is None:
-            print("warning: %s" % NO_RESPONDER_HELP, file=sys.stderr)
-        return
+        sys.exit(pair_command(port))
     replay_log()
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     responder = advertise(port)
@@ -478,6 +600,12 @@ def main():
     print("auth at %s (agent token is in there)" % AUTH_PATH, file=sys.stderr)
     print("pair a phone with: python3 server.py --pair", file=sys.stderr)
     print("APNs key path: %s (%s)" % (APNS_KEY_PATH, key_state), file=sys.stderr)
+    if PUBLIC_URL:
+        problem = public_url_problem(PUBLIC_URL)
+        print("public url: %s%s" % (PUBLIC_URL,
+                                    " -- UNUSABLE, it %s. --pair will refuse it." % problem if problem
+                                    else " (pairing codes will carry this address)"),
+              file=sys.stderr)
     print("local network: %s" % ("announced as _turntable._tcp via %s" % responder if responder
                                  else "NOT announced. %s" % NO_RESPONDER_HELP),
           file=sys.stderr)

@@ -25,13 +25,13 @@ last time, and what time it is. This gives it a speaker.
 ## Quickstart
 
 You need: an iPhone with an Apple Music subscription, a Mac with Xcode to install the app
-once, and a computer on the same Wi-Fi where your agent can run shell commands.
+once, and an agent that can run shell commands somewhere.
 
 **1. Build and install the app.** See "Building the app" below. It ships pointing at
 nothing.
 
 **2. Open it and tap Copy Prompt.** The first screen is the whole of setup: a prompt to
-copy, and six boxes for the code that comes back.
+copy, and one box for the code that comes back.
 
 **3. Paste that prompt to your agent.** Any agent with a shell. It does this:
 
@@ -41,15 +41,35 @@ nohup python3 server.py > turntable.log 2>&1 &
 python3 server.py --pair
 ```
 
-Python 3, standard library only, nothing to install, no code to edit. `--pair` prints a
-six character code that lasts 15 minutes and works once.
+Python 3, standard library only, nothing to install, no code to edit.
 
-**4. Type the six characters into the app.** There is no address to type. The phone finds
-the server on the Wi-Fi, redeems the code there, and keeps the address the server names in
-its reply, which is why it goes on working after you leave that Wi-Fi if the server was
-started with `TURNTABLE_PUBLIC_URL`.
+**4. Enter the code.** One code, one box, whatever kind of agent you asked. There is never
+an address to type.
 
 **5. Ask for a song.** Your agent already has [AGENTS.md](AGENTS.md).
+
+### The one decision your agent makes
+
+Where the server runs decides what the code looks like, and the agent works that out from
+where its own shell is:
+
+| Your agent's shell | What it does | What it sends you |
+| --- | --- | --- |
+| On your Wi-Fi (your laptop, a local coding agent) | Starts the server plain. It announces itself as `_turntable._tcp` and the phone finds it. | Six characters, e.g. `DPGTX9` |
+| Anywhere else (a cloud or hosted agent) | Starts the server with `TURNTABLE_PUBLIC_URL` set to an address your phone can already reach. | One longer code starting `TT1-`, which carries that address inside it |
+
+The long code is `TT1-` plus base64url of the address and a single-use secret. It carries
+no token, the secret dies in 15 minutes and works once, and the server refuses to put a
+public plain-`http` address in one. The app decodes it, checks the address, and redeems
+straight against it, so nothing has to be discovered.
+
+A cloud agent needs an address that already exists: a public hostname, a tunnel that is
+already running, or a tailnet address **your phone is also on**. If it has none, the right
+answer is to run those three commands on your own computer instead, and the prompt tells it
+to say so rather than improvise.
+
+Either way, the address your phone keeps afterwards is the one the server names in its
+pairing reply, not the one in the code.
 
 ## For agents
 
@@ -71,13 +91,15 @@ no subscription, empty queue, search failed, no results, agent offline with the 
 
 ## Connectivity
 
-Pairing itself only needs both on the same Wi-Fi. After that, the phone has to be able to
-reach the server, and if you want that off your home Wi-Fi there are three ways, with their
-costs. Set `TURNTABLE_PUBLIC_URL` to the address before pairing; a phone that already
-paired keeps whatever it was told then.
+Pairing on the six character path needs both on the same Wi-Fi; the `TT1-` path needs only
+an address the phone can reach. After that, the phone has to go on reaching the server, and
+if you want that off your home Wi-Fi there are three ways, with their costs. Set
+`TURNTABLE_PUBLIC_URL` to the address before pairing; a phone that already paired keeps
+whatever it was told then.
 
 - **Tailscale.** Both on the tailnet, use the server's `100.x` address. Nothing is exposed
-  publicly. Needs the Tailscale app running on the phone.
+  publicly. Needs the Tailscale app running on the phone: a `100.x` address the phone has
+  not joined is unreachable, not private.
 - **A tunnel** (cloudflared, ngrok). Gives a laptop behind NAT a public https URL. Set
   `TURNTABLE_PUBLIC_URL` to the tunnel URL so a pairing phone is told the right address.
   Free tunnel URLs change on restart, and the phone then has a stale address.
@@ -93,6 +115,10 @@ paired keeps whatever it was told then.
   pairing; the agent's own token is generated on first start and written to
   `server/auth.json` (mode 0600, gitignored). Pairing codes are stored hashed with a 15
   minute expiry and burn after ten wrong guesses.
+- **A pairing code carries a secret, never a token.** The `TT1-` code holds an address and
+  a single-use 16 character secret, which is about 78 bits and is stored server-side only
+  as a sha256. Both sides refuse a public plain-`http` address, because that secret and the
+  token that comes back would cross the internet readable.
 - **The app says why.** A failed steer comes back to the server in the next check-in as
   `last_steer_error`, so the agent can report the real reason instead of guessing.
 - **Colour never carries meaning alone.** Every status dot sits next to a word.
