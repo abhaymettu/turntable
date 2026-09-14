@@ -5,36 +5,50 @@ import Foundation
 enum Config {
     static let checkInInterval: Duration = .seconds(15)
 
-    /// The whole of setup, written to be pasted into a coding agent. Edit it here.
+    /// The whole of setup, written to be pasted into any coding agent. Edit it here.
     ///
-    /// It is drafted against what `AGENTS.md` and `server/server.py` actually do: the
-    /// server is Python 3 with nothing to install, `./run.sh` starts it on 8787,
-    /// `TURNTABLE_PUBLIC_URL` is the address a freshly paired phone is handed back, and
-    /// `--pair` prints a six character code good for 15 minutes and one phone.
+    /// Written for the smallest agent that could do the job: one shell, Python 3, and a
+    /// way to fetch a URL. It names no vendor, no plugin and no runtime, because the
+    /// human pastes it into whatever they already talk to. Every step is drafted against
+    /// what `server/server.py` actually does: stdlib only with nothing to install, port
+    /// 8787 by default, `--pair` prints a six character code good for 15 minutes and one
+    /// phone, and `TURNTABLE_PUBLIC_URL` is the address a freshly paired phone keeps.
+    ///
+    /// The Tailscale and tunnel options are last and marked optional on purpose. They are
+    /// the one part of the old prompt an agent could not carry out without installing
+    /// software and answering a login prompt, which is exactly what a texting agent
+    /// cannot do.
     static let setupPrompt = """
         Set up Turntable for me. Everything you need is at \
         https://github.com/abhaymettu/turntable
 
-        1. Open that repo and read AGENTS.md first. It is written for you.
+        What this needs from you: a shell on a computer that is on the same Wi-Fi as my \
+        phone right now, and Python 3. Nothing else. No installs, no accounts, no code \
+        changes, no admin rights.
 
-        2. Work out the address my phone should keep. If Tailscale is running on this \
-        machine, that is its 100.x address. If Tailscale is not installed, install and \
-        start it (brew install --cask tailscale, then tailscale up), and tell me in one \
-        line that I need to turn Tailscale on on my phone too. Skipping Tailscale is fine, \
-        but then Turntable only works while I am on this Wi-Fi.
+        1. Get the server. Clone the repo, or just download the one file it needs:
+           curl -fsSL https://raw.githubusercontent.com/abhaymettu/turntable/main/server/server.py -o server.py
 
-        3. Start the server with that address:
-           cd server && TURNTABLE_PUBLIC_URL=http://<address>:8787 ./run.sh
-        Python 3, standard library only, nothing to install. Leave it running.
+        2. Start it so it keeps running after your command returns. On macOS or Linux:
+           nohup python3 server.py > turntable.log 2>&1 &
+        Wait a second, then check it is up: curl -s http://localhost:8787/healthz
+        That should print {"ok": true, ...}.
 
-        4. Keep this machine on the same Wi-Fi as my phone for the next step. The app finds \
-        the server over the local network to redeem the code, so it never asks me to type \
-        an address.
+        3. Mint a pairing code, in the same shell:
+           python3 server.py --pair
 
-        5. In a second shell: cd server && python3 server.py --pair
+        4. Reply with ONLY the six characters it prints. No address, no explanation, \
+        nothing else. The code lasts 15 minutes and works once.
 
-        6. Reply with ONLY the six character code it prints. No address, no explanation, \
-        nothing else. It lasts 15 minutes and works once.
+        My phone finds the server on the Wi-Fi by itself, so it never asks me to type an \
+        address. Keep that computer on my Wi-Fi until I have entered the code.
+
+        OPTIONAL, skip if unsure: if that computer ALREADY has Tailscale or a tunnel \
+        running, start the server in step 2 with the address my phone should keep, and \
+        Turntable keeps working after I leave this Wi-Fi:
+           TURNTABLE_PUBLIC_URL=http://<that address>:8787 nohup python3 server.py > turntable.log 2>&1 &
+        Do not install anything for this. Without it pairing still works; I just have to \
+        stay on this Wi-Fi, and we can redo it later.
         """
 
     static var appVersion: String {

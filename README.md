@@ -4,6 +4,11 @@ An iPhone app your coding agent can DJ.
 
 You text your agent. The music changes.
 
+<a href="docs/turntable-promo.mp4"><img src="docs/turntable-promo-poster.png" width="640" alt="Turntable promo video, 27 seconds"></a>
+
+<sub><b>27 second promo.</b> Click the still to play it here on GitHub, or grab
+<a href="docs/turntable-promo.mp4">docs/turntable-promo.mp4</a> directly.</sub>
+
 Turntable is two pieces: an iOS app that plays Apple Music, and a small Python server your
 agent writes to. The agent never touches Apple Music. It sets a pick on the server, the
 phone checks in every 15 seconds, reads the pick, and plays it.
@@ -19,29 +24,32 @@ last time, and what time it is. This gives it a speaker.
 
 ## Quickstart
 
-You need: an iPhone with an Apple Music subscription, a Mac with Xcode to install the app,
-and a machine your agent can run commands on.
+You need: an iPhone with an Apple Music subscription, a Mac with Xcode to install the app
+once, and a computer on the same Wi-Fi where your agent can run shell commands.
 
-**1. Start the server.** Python 3, standard library only, nothing to install.
+**1. Build and install the app.** See "Building the app" below. It ships pointing at
+nothing.
+
+**2. Open it and tap Copy Prompt.** The first screen is the whole of setup: a prompt to
+copy, and six boxes for the code that comes back.
+
+**3. Paste that prompt to your agent.** Any agent with a shell. It does this:
 
 ```
-cd server && ./run.sh
+curl -fsSL https://raw.githubusercontent.com/abhaymettu/turntable/main/server/server.py -o server.py
+nohup python3 server.py > turntable.log 2>&1 &
+python3 server.py --pair
 ```
 
-**2. Mint a pairing code.** In another shell, on the same machine:
+Python 3, standard library only, nothing to install, no code to edit. `--pair` prints a
+six character code that lasts 15 minutes and works once.
 
-```
-cd server && python3 server.py --pair
-```
+**4. Type the six characters into the app.** There is no address to type. The phone finds
+the server on the Wi-Fi, redeems the code there, and keeps the address the server names in
+its reply, which is why it goes on working after you leave that Wi-Fi if the server was
+started with `TURNTABLE_PUBLIC_URL`.
 
-It prints a six character code and the address to reach the server at. The code lasts 15
-minutes and works once.
-
-**3. Build and install the app**, then type that address and code into the pairing screen.
-See "Building the app" below. The app ships pointing at nothing; pairing is how it learns
-where your server is and gets the token it sends with every later request.
-
-**4. Let the agent steer.** Point your agent at [AGENTS.md](AGENTS.md) and ask for a song.
+**5. Ask for a song.** Your agent already has [AGENTS.md](AGENTS.md).
 
 ## For agents
 
@@ -63,7 +71,10 @@ no subscription, empty queue, search failed, no results, agent offline with the 
 
 ## Connectivity
 
-The phone has to be able to reach the server. Three ways, with their costs:
+Pairing itself only needs both on the same Wi-Fi. After that, the phone has to be able to
+reach the server, and if you want that off your home Wi-Fi there are three ways, with their
+costs. Set `TURNTABLE_PUBLIC_URL` to the address before pairing; a phone that already
+paired keeps whatever it was told then.
 
 - **Tailscale.** Both on the tailnet, use the server's `100.x` address. Nothing is exposed
   publicly. Needs the Tailscale app running on the phone.
@@ -111,13 +122,10 @@ python3 tools/make_icon.py
 
 ## Screenshots
 
-TODO: DJ tab with a queue.
+The [27 second promo](docs/turntable-promo.mp4) above walks the whole app: the setup
+screen, a queue filling up, Now Playing with the agent-online chip, and the Shows tab.
 
-TODO: pairing screen.
-
-TODO: agent status line showing an offline reason.
-
-TODO: podcasts tab.
+TODO: still shots of each tab.
 
 ## What is not built
 

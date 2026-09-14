@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -150,30 +151,51 @@ def redeem_code(raw, device_id):
     return token, None
 
 
-def advertise(port):
-    """Announce this server on the local network as _turntable._tcp.
+def responder_argv(port):
+    """The first local-network responder on this machine that can announce us, or None.
 
-    A phone that has just been installed knows a six character code and nothing else,
-    so it has to find the server before it can redeem the code. Bonjour is how it does
-    that, and it is the only reason this exists: the address the phone keeps afterwards
-    is the one POST /pair hands back, not the one it discovered.
-
-    Both responders here ship with the OS (mDNSResponder on macOS, avahi on Linux), so
-    this stays stdlib-only. If neither is present the server runs exactly as before and
-    a phone pairs through the address field in the app's Advanced screen.
+    macOS always has dns-sd, it is part of mDNSResponder. Linux has
+    avahi-publish-service only when avahi-utils is installed and avahi-daemon is
+    running, which is common on desktops and uncommon on servers. Calling out to
+    whichever exists keeps this file stdlib-only with nothing to pip install.
     """
     name = "Turntable on %s" % socket.gethostname().split(".")[0]
     for argv in (
         ["dns-sd", "-R", name, "_turntable._tcp", "local", str(port)],
         ["avahi-publish-service", name, "_turntable._tcp", str(port)],
     ):
-        try:
-            child = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError:
-            continue
-        atexit.register(child.terminate)
-        return argv[0]
+        if shutil.which(argv[0]):
+            return argv
     return None
+
+
+NO_RESPONDER_HELP = (
+    "no dns-sd or avahi-publish-service on this machine, so a freshly installed phone "
+    "cannot find this server and pairing will fail. On Linux: install avahi-utils and "
+    "start avahi-daemon. Otherwise run the server on a machine that has one."
+)
+
+
+def advertise(port):
+    """Announce this server on the local network as _turntable._tcp.
+
+    A phone that has just been installed knows a six character code and nothing else,
+    so it has to find the server before it can redeem the code. This announcement is
+    how it does that, and it is the only reason this exists: the address the phone
+    keeps afterwards is the one POST /pair hands back, not the one it discovered.
+
+    With no responder the server still runs and still serves every endpoint, but first
+    run has no way in: the app's address field lives behind pairing, not in front of it.
+    """
+    argv = responder_argv(port)
+    if argv is None:
+        return None
+    try:
+        child = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    atexit.register(child.terminate)
+    return argv[0]
 
 
 def lan_address(port):
@@ -443,6 +465,10 @@ def main():
         print("pairing code: %s" % code)
         print("server address: %s" % lan_address(port))
         print("good for 15 minutes, one phone. Run this again for another code.")
+        # Said here as well as at startup, because this is the moment an agent is about
+        # to hand six characters to a person whose phone has no other way in.
+        if responder_argv(port) is None:
+            print("warning: %s" % NO_RESPONDER_HELP, file=sys.stderr)
         return
     replay_log()
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
@@ -453,7 +479,7 @@ def main():
     print("pair a phone with: python3 server.py --pair", file=sys.stderr)
     print("APNs key path: %s (%s)" % (APNS_KEY_PATH, key_state), file=sys.stderr)
     print("local network: %s" % ("announced as _turntable._tcp via %s" % responder if responder
-                                 else "not announced, no dns-sd or avahi-publish-service here"),
+                                 else "NOT announced. %s" % NO_RESPONDER_HELP),
           file=sys.stderr)
     try:
         server.serve_forever()

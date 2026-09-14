@@ -12,39 +12,90 @@ One server holds one human's pick and one human's devices. There is no account s
 no multi-tenancy. If you are steering more than one person, that is more than one server
 process.
 
+## What you need to do any of this
+
+Everything below works from a plain shell. It does not care what kind of agent you are.
+
+**Required:**
+
+- A shell on a computer that is on the same Wi-Fi as the human's phone at the moment they
+  type the pairing code. After that one moment the network can change.
+- Python 3.8 or newer. Standard library only. Nothing to `pip install`, no virtualenv, no
+  root, no account, no API key.
+- A way to fetch a URL: `git clone`, or `curl`, or `wget`. One file is enough.
+- The ability to leave a process running after a command returns, or a second shell.
+  `nohup python3 server.py > turntable.log 2>&1 &` is enough and needs neither systemd nor
+  a process manager.
+- A local-network responder, so the phone can find the server: `dns-sd` on macOS (always
+  present) or `avahi-publish-service` on Linux (`avahi-utils`, with `avahi-daemon`
+  running). The server tells you at startup and at `--pair` time when it has neither.
+
+**Not required, ever:** a particular agent, editor, IDE or model; a plugin, extension or
+tool protocol; a specific language runtime beyond Python 3; Docker; Homebrew; Tailscale;
+an Apple Developer account; any edit to any file in this repo. If something below seems to
+ask for one of those, it is optional and is labelled so.
+
 ## If someone just handed you the setup prompt
 
-They installed the app, tapped Copy, and pasted it to you. The whole job is: get the server
-running, get it reachable, mint a pairing code, and reply with only the six characters. In
-order:
+They installed the app, tapped Copy, and pasted it to you. The whole job is four commands
+and a six character reply. Do exactly this and nothing more:
 
-1. Clone or open this repo.
-2. Read the rest of this file.
-3. Decide the address the phone should keep. If Tailscale is running on this machine, that
-   is its `100.x` address; if it is not installed, install and start it and say, in one
-   line, that they need to turn Tailscale on on their phone too. Without Tailscale the LAN
-   address still works, but only while they are on that Wi-Fi.
-4. Start the server with that address in `TURNTABLE_PUBLIC_URL` (see below). Leave it up.
-5. Stay on the same Wi-Fi as the phone for the pairing step: the app finds the server over
-   Bonjour and never asks anyone to type an address.
-6. `python3 server.py --pair`, then reply with **only** the six character code. No address,
-   no commentary. It lasts 15 minutes and works once.
+```
+curl -fsSL https://raw.githubusercontent.com/abhaymettu/turntable/main/server/server.py -o server.py
+nohup python3 server.py > turntable.log 2>&1 &
+curl -s http://localhost:8787/healthz
+python3 server.py --pair
+```
+
+1. Get `server/server.py`. `git clone` the repo if you prefer; the single file is the whole
+   server and runs standalone from any directory.
+2. Start it in the background, so you keep your shell. Then confirm with `/healthz`, which
+   answers `{"ok": true, ...}` and needs no token.
+3. Mint the code. The same shell is fine; `--pair` is a separate short-lived invocation
+   that writes a code into the auth file and exits, not a second server.
+4. **Reply with only the six characters.** No address, no commentary, nothing else. The
+   first run screen has no address field, because the app finds the server itself over the
+   local network. The code lasts 15 minutes and works once.
+
+Two things to watch while doing this:
+
+- **Stay on the phone's Wi-Fi until they have typed the code.** That is the only step that
+  needs it. Afterwards the phone uses the address the server named in its reply.
+- **If `--pair` prints a warning about `dns-sd` or `avahi-publish-service`, stop and say
+  so** before handing over a code. Without one of those the phone has no way to find the
+  server and the code cannot be redeemed. See *What you need* above.
+
+Everything else in this file is either the API you steer with afterwards, or optional.
 
 ## Start the server
 
 ```
-cd server && ./run.sh
+python3 server.py
 ```
 
-That runs `python3 server.py`. Python 3, stdlib only, nothing to `pip install`. It listens
-on `0.0.0.0:8787` by default.
+Or `cd server && ./run.sh`, which is the same thing from a checkout. Python 3, stdlib only,
+nothing to `pip install`. It listens on `0.0.0.0:8787` by default, and `server.py` is
+self-contained: copy that one file anywhere and it works, writing its auth and log files
+beside itself.
+
+If your shell blocks on a foreground process, background it and keep working in the same
+shell:
+
+```
+nohup python3 server.py > turntable.log 2>&1 &
+```
 
 While it runs it also announces itself on the local network as `_turntable._tcp`, through
-whichever of `dns-sd` (macOS) or `avahi-publish-service` (Linux) is present. That
-announcement is how a freshly installed phone finds the server to redeem a pairing code
-against; it is not how the phone remembers the server afterwards. If neither responder
-exists the server runs exactly as before, and pairing then needs the address typed into the
-app's Advanced screen.
+whichever of `dns-sd` (macOS) or `avahi-publish-service` (Linux, from `avahi-utils`, with
+`avahi-daemon` running) is present. That announcement is how a freshly installed phone
+finds the server to redeem a pairing code against; it is not how the phone remembers the
+server afterwards.
+
+**With no responder, first run cannot pair at all.** The server still starts and still
+serves every endpoint, but the app's address field lives behind pairing, not in front of
+it, so a phone that has never paired has no way in. The server says so at startup and
+again at `--pair` time. Install `avahi-utils` or run the server on a machine that has a
+responder.
 
 Environment variables:
 
@@ -115,8 +166,12 @@ A code works once. Redeeming an already-used or unknown code returns
 returns `{"error": "expired", "reason": "expired"}`. Ten wrong guesses burn every code
 currently pending, so do not brute force this.
 
-If Bonjour cannot cross the network between you and the phone, the app's Advanced screen
-takes an address directly; that is the fallback, not the path.
+There is no second path. The app's Advanced screen does take an address directly, but it
+is inside the app behind pairing: it repoints an **already paired** phone at a server that
+moved, on the token it already holds. It is not reachable on first run. If the
+announcement cannot cross the network between you and the phone, pairing does not
+complete, and the honest thing to tell the human is that the server has to run on their
+Wi-Fi.
 
 ## Endpoint reference
 
@@ -241,7 +296,16 @@ It is the numeric id in an Apple Music song URL: the `NNNNNNNN` in
 search API available to you here; get the id from a URL the human gives you, or ask them
 for one. Do not invent or guess a catalog_id.
 
-## Connectivity options
+## Connectivity options, all optional
+
+None of this is needed to pair or to steer. Skip the whole section unless the human has
+asked for music that keeps working when they leave the house, and never install software
+on their machine to satisfy it without asking first.
+
+Whichever you pick, set `TURNTABLE_PUBLIC_URL` **before** the phone pairs. It is what the
+pairing reply hands back, and it is the address the phone keeps. Setting it afterwards
+does nothing to a phone that already paired; that phone needs a fresh code, or the address
+typed into the app's Advanced screen.
 
 - **Tailscale.** Phone and server both join the same tailnet; the phone is paired against
   the server's `100.x` tailnet address. Nothing is exposed to the public internet. Tradeoff:
@@ -277,8 +341,8 @@ for one. Do not invent or guess a catalog_id.
 
 ## First five minutes in this repo
 
-1. Start the server: `cd server && ./run.sh` (add `TURNTABLE_PUBLIC_URL` first if the phone should keep a tailnet or tunnel address)
-2. Read your token: `TOKEN=$(python3 -c 'import json;print(json.load(open("auth.json"))["agent_token"])')` (run from inside `server/`, or point at wherever `TURNTABLE_AUTH` put it)
+1. Start the server: `nohup python3 server.py > turntable.log 2>&1 &` (optionally with `TURNTABLE_PUBLIC_URL` in front, if the phone should keep a tailnet or tunnel address)
+2. Read your token: `TOKEN=$(python3 -c 'import json;print(json.load(open("auth.json"))["agent_token"])')` (run from beside `server.py`, or point at wherever `TURNTABLE_AUTH` put it)
 3. Mint a pairing code: `python3 server.py --pair`
 4. Reply with only the six character code. The app finds the server itself
 5. Confirm the device shows up: `curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8787/devices`
